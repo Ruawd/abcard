@@ -26,7 +26,8 @@ auto_bindcard/
 ├── stripe_fingerprint.py  # Stripe 设备指纹 (guid/muid/sid)
 ├── payment_flow.py        # 支付主链路 (checkout → tokenize → confirm)
 ├── logger.py              # 日志 & 结果持久化
-├── main.py                # 主入口
+├── main.py                # CLI 主入口
+├── ui.py                  # Streamlit Web UI
 ├── test_all.py            # 单元测试 (23 用例)
 ├── requirements.txt       # 依赖
 ├── TEST_REPORT.md         # 测试报告
@@ -47,8 +48,26 @@ pip install -r requirements.txt
 依赖:
 - `curl_cffi` — TLS 指纹模拟（绕过 Cloudflare）
 - `requests` — 降级 HTTP 客户端
+- `streamlit` — Web UI
+- `pandas` — 数据展示
 
 ## 使用
+
+### Web UI (推荐)
+
+```bash
+streamlit run ui.py --server.address 0.0.0.0 --server.port 8501
+```
+
+浏览器访问 `http://localhost:8501`。
+
+UI 功能:
+- 侧边栏配置 (代理、邮箱、卡片、账单)
+- 流程步骤可选 (注册 / Checkout / 支付确认)
+- 实时日志输出
+- 账号列表 & 历史记录
+
+### CLI
 
 ### 1. 配置
 
