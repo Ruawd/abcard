@@ -122,11 +122,26 @@ with cfg_col2:
 
 if do_payment:
     with st.expander("💳 信用卡信息 ⚠️ Live 模式 - 真实扣款", expanded=True):
+        if st.button("🧪 填充测试卡", key="fill_test_card"):
+            st.session_state["_test_card_number"] = "4242424242424242"
+            st.session_state["_test_exp_month"] = "12"
+            st.session_state["_test_exp_year"] = "2030"
+            st.session_state["_test_cvc"] = "123"
+            st.rerun()
+
+        _tn = st.session_state.get("_test_card_number", "")
+        _tm = st.session_state.get("_test_exp_month", "12")
+        _ty = st.session_state.get("_test_exp_year", "2030")
+        _tc = st.session_state.get("_test_cvc", "")
+
         cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 1])
-        card_number = cc1.text_input("卡号", placeholder="真实卡号")
-        exp_month = cc2.text_input("月", value="12")
-        exp_year = cc3.text_input("年", value="2030")
-        card_cvc = cc4.text_input("CVC", type="password")
+        card_number = cc1.text_input("卡号", value=_tn, placeholder="真实卡号")
+        exp_month = cc2.text_input("月", value=_tm)
+        exp_year = cc3.text_input("年", value=_ty)
+        card_cvc = cc4.text_input("CVC", value=_tc, type="password")
+
+        if card_number == "4242424242424242":
+            st.info("ℹ️ 测试卡仅在 test 模式下有效，live 模式会被拒绝")
 
 st.divider()
 
