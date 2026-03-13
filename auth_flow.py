@@ -52,8 +52,29 @@ class AuthFlow:
 
     def __init__(self, config: Config):
         self.config = config
-        self.session = create_http_session(proxy=config.proxy)
+        self._impersonate_candidates = ["chrome136", "chrome124", "chrome120"]
+        self._impersonate_idx = 0
+        self.session = create_http_session(
+            proxy=config.proxy,
+            impersonate=self._impersonate_candidates[self._impersonate_idx],
+        )
         self.result = AuthResult()
+
+    @staticmethod
+    def _is_tls_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        markers = ["curl: (35)", "tls connect error", "openssl_internal", "sslerror"]
+        return any(m in msg for m in markers)
+
+    def _rotate_impersonate_session(self) -> bool:
+        """仅在 curl_cffi 指纹模式内切换 UA 指纹版本重试。"""
+        if self._impersonate_idx >= len(self._impersonate_candidates) - 1:
+            return False
+        self._impersonate_idx += 1
+        imp = self._impersonate_candidates[self._impersonate_idx]
+        logger.warning(f"TLS 异常，切换指纹重试: impersonate={imp}")
+        self.session = create_http_session(proxy=self.config.proxy, impersonate=imp)
+        return True
 
     def _common_headers(self, referer: str = "https://chatgpt.com/") -> dict:
         return {
@@ -73,7 +94,7 @@ class AuthFlow:
             resp = self.session.get("https://cloudflare.com/cdn-cgi/trace", timeout=15)
             if resp.status_code == 200:
                 loc = re.search(r"loc=(\w+)", resp.text)
-                ip = re.search(r"ip=([\d.]+)", resp.text)
+                ip = re.search(r"ip=([^\n]+)", resp.text)
                 logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, "
                             f"地区: {loc.group(1) if loc else 'N/A'}")
                 return True
@@ -88,11 +109,16 @@ class AuthFlow:
 
         # Cloudflare 可能在短时间内多次请求后返回 403，重试 3 次
         for attempt in range(3):
-            resp = self.session.get(
-                "https://chatgpt.com/api/auth/csrf",
-                headers=headers,
-                timeout=30,
-            )
+            try:
+                resp = self.session.get(
+                    "https://chatgpt.com/api/auth/csrf",
+                    headers=headers,
+                    timeout=30,
+                )
+            except Exception as e:
+                if self._is_tls_error(e) and self._rotate_impersonate_session():
+                    continue
+                raise
             if resp.status_code == 403 and attempt < 2:
                 wait = (attempt + 1) * 5
                 logger.warning(f"Cloudflare 403, {wait}s 后重试 ({attempt + 1}/3)...")
