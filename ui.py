@@ -14,7 +14,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import Config, CardInfo, BillingInfo
+from config import Config, CardInfo, BillingInfo, CaptchaConfig
 from mail_provider import MailProvider
 from auth_flow import AuthFlow, AuthResult
 from payment_flow import PaymentFlow
@@ -288,6 +288,13 @@ with col_step3:
 with col_proxy:
     proxy = st.text_input("代理 (可选)", placeholder="socks5://127.0.0.1:1080", label_visibility="collapsed")
 
+# 打码服务配置
+captcha_col1, captcha_col2 = st.columns([3, 1])
+with captcha_col1:
+    captcha_key = st.text_input("🔑 YesCaptcha API Key", value="27e2aa9da9a236b2a6cfcc3fa0f045fdec2a3633104361", type="password", help="用于解决 Stripe hCaptcha 挑战验证")
+with captcha_col2:
+    captcha_api_url = st.text_input("打码 API", value="https://api.yescaptcha.com")
+
 st.divider()
 
 # ════════════════════════════════════════
@@ -459,6 +466,7 @@ ALL_NODES = [
     ("指纹获取", "fingerprint"),
     ("卡片Token", "tokenize"),
     ("确认支付", "confirm"),
+    ("挑战验证", "challenge"),
 ]
 
 def get_active_nodes():
@@ -468,7 +476,7 @@ def get_active_nodes():
     if do_checkout:
         active += [("Checkout", "checkout"), ("指纹获取", "fingerprint")]
     if do_payment:
-        active += [("卡片Token", "tokenize"), ("确认支付", "confirm")]
+        active += [("卡片Token", "tokenize"), ("确认支付", "confirm"), ("挑战验证", "challenge")]
     return active
 
 
@@ -516,6 +524,7 @@ with tab_run:
             cfg.team_plan.workspace_name = workspace_name
             cfg.team_plan.seat_quantity = seat_quantity
             cfg.team_plan.promo_campaign_id = promo_campaign
+            cfg.captcha = CaptchaConfig(api_url=captcha_api_url, client_key=captcha_key)
             cfg.billing = BillingInfo(name=billing_name, email="", country=country_code, currency=currency,
                                       address_line1=address_line1, address_state=address_state,
                                       postal_code=postal_code)
@@ -594,10 +603,37 @@ with tab_run:
                     pay = pf.confirm_payment(cs_id)
                     rd["confirm_status"] = pay.confirm_status
                     rd["confirm_response"] = pay.confirm_response
+                    pull_captured_logs()
+                    log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+
+                    # confirm 本身完成，更新节点状态
+                    # challenge 验证结果已经包含在 pay 里了 (confirm_payment 内部处理)
+                    if pay.success:
+                        rd["steps"]["confirm"] = "✅"
+                        rd["steps"]["challenge"] = "✅"
+                        node_status["confirm"] = "done"
+                        node_status["challenge"] = "done"
+                    elif pay.error and "hCaptcha" in pay.error:
+                        rd["steps"]["confirm"] = "✅"  # confirm 本身成功了
+                        rd["steps"]["challenge"] = "❌"
+                        node_status["confirm"] = "done"
+                        node_status["challenge"] = "error"
+                    elif pay.error and "requires_action" in pay.error:
+                        rd["steps"]["confirm"] = "✅"
+                        rd["steps"]["challenge"] = "❌"
+                        node_status["confirm"] = "done"
+                        node_status["challenge"] = "error"
+                    else:
+                        rd["steps"]["confirm"] = "❌"
+                        rd["steps"]["challenge"] = "⏭️"
+                        node_status["confirm"] = "error"
+                        node_status["challenge"] = "pending"
+
                     rd["success"] = pay.success
                     rd["error"] = pay.error
-                    rd["steps"]["confirm"] = "✅" if pay.success else "❌"
-                    node_status["confirm"] = "done" if pay.success else "error"; _refresh()
+                    _refresh()
+                    pull_captured_logs()
+                    log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
                 else:
                     rd["success"] = True
             elif do_register:

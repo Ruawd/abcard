@@ -5,6 +5,7 @@
   2. 获取 Stripe 指纹 (guid/muid/sid)
   3. POST /v1/payment_methods -> 卡片 tokenization
   4. POST /v1/payment_pages/{checkout_session_id}/confirm -> 支付确认
+  5. 如需要: 解决 Stripe hCaptcha 挑战 (intent_confirmation_challenge)
 """
 import json
 import logging
@@ -15,6 +16,7 @@ from typing import Optional
 from config import Config, CardInfo, BillingInfo
 from auth_flow import AuthResult
 from stripe_fingerprint import StripeFingerprint
+from captcha_solver import CaptchaSolver
 from http_client import create_http_session
 
 logger = logging.getLogger(__name__)
@@ -498,18 +500,52 @@ class PaymentFlow:
         if resp.status_code == 200:
             data = resp.json()
             status = data.get("status", "")
-            if status in ("succeeded", "complete", "requires_action", "open"):
-                self.result.success = status in ("succeeded", "complete")
-                if status == "requires_action":
-                    logger.warning("支付需要额外验证 (3DS)，请手动完成")
-                    self.result.error = "requires_3ds_verification"
-                elif status == "open":
-                    logger.info("支付已提交, 状态 open (等待处理/卡片验证中)")
-                    self.result.success = True
+            pi = data.get("payment_intent", {})
+            pi_status = pi.get("status", "")
+            next_action = pi.get("next_action", {})
+
+            if status == "complete" or (status == "open" and pi_status == "succeeded"):
+                self.result.success = True
+                logger.info("支付确认成功!")
+            elif pi_status == "requires_action" and next_action:
+                # Stripe Radar challenge / 3DS
+                sdk_info = next_action.get("use_stripe_sdk", {})
+                challenge_type = sdk_info.get("type", "")
+
+                if challenge_type == "intent_confirmation_challenge":
+                    logger.info("Stripe 要求 hCaptcha 挑战验证 (intent_confirmation_challenge)")
+                    stripe_js = sdk_info.get("stripe_js", {})
+                    site_key = stripe_js.get("site_key", "")
+                    rqdata = stripe_js.get("rqdata", "")
+                    verification_url = stripe_js.get("verification_url", "")
+                    pi_id = pi.get("id", "")
+
+                    if site_key and verification_url and pi_id:
+                        resolved = self._handle_stripe_challenge(
+                            pi_id=pi_id,
+                            site_key=site_key,
+                            rqdata=rqdata,
+                            verification_url=verification_url,
+                        )
+                        if resolved:
+                            self.result.success = True
+                            logger.info("支付挑战验证完成, 支付成功!")
+                        else:
+                            self.result.error = "hCaptcha 挑战验证失败"
+                    else:
+                        self.result.error = f"挑战参数不完整: site_key={bool(site_key)}, url={bool(verification_url)}"
+                        logger.error(self.result.error)
+                elif next_action.get("type") == "redirect_to_url":
+                    logger.warning("支付需要 3DS 网页验证，无法自动完成")
+                    self.result.error = "requires_3ds_redirect"
                 else:
-                    logger.info("支付确认成功!")
+                    logger.warning(f"未知的 next_action 类型: {challenge_type or next_action.get('type')}")
+                    self.result.error = f"requires_action: {challenge_type or next_action.get('type')}"
+            elif status in ("succeeded", "complete"):
+                self.result.success = True
+                logger.info("支付确认成功!")
             else:
-                self.result.error = f"支付状态异常: {status}"
+                self.result.error = f"支付状态异常: session={status}, pi={pi_status}"
                 logger.error(self.result.error)
         else:
             error_msg = ""
@@ -523,9 +559,81 @@ class PaymentFlow:
 
         return self.result
 
+    # ── Step 5: 处理 Stripe hCaptcha 挑战 ──
+    def _handle_stripe_challenge(
+        self, pi_id: str, site_key: str, rqdata: str, verification_url: str
+    ) -> bool:
+        """
+        解决 Stripe intent_confirmation_challenge:
+        1. 用 YesCaptcha 打码 hCaptcha
+        2. POST /v1/payment_intents/{pi_id}/verify_challenge
+        """
+        if not self.config.captcha.client_key:
+            logger.error("未配置打码服务 API Key，无法解决 hCaptcha 挑战")
+            return False
+
+        solver = CaptchaSolver(
+            api_url=self.config.captcha.api_url,
+            client_key=self.config.captcha.client_key,
+        )
+
+        # hCaptcha 的 siteURL 应该是 Stripe checkout 页面
+        site_url = self.checkout_url or "https://js.stripe.com"
+        captcha_token = solver.solve_hcaptcha(
+            site_key=site_key,
+            site_url=site_url,
+            rqdata=rqdata,
+        )
+        if not captcha_token:
+            return False
+
+        # 提交验证
+        logger.info(f"[支付 5/5] 提交 hCaptcha 挑战验证: {pi_id[:20]}...")
+
+        verify_url = f"https://api.stripe.com{verification_url}" if verification_url.startswith("/") else verification_url
+
+        headers = {
+            "Authorization": f"Bearer {self.stripe_pk}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "Origin": "https://js.stripe.com",
+            "Referer": "https://js.stripe.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+            ),
+        }
+
+        form_data = {
+            "hcaptcha_token": captcha_token,
+            "key": self.stripe_pk,
+        }
+
+        stripe_session = create_http_session(proxy=self.config.proxy)
+        resp = stripe_session.post(verify_url, headers=headers, data=form_data, timeout=60)
+
+        logger.info(f"verify_challenge 状态: {resp.status_code}")
+        try:
+            result = resp.json()
+            self.result.confirm_response = result
+            pi_status = result.get("status", "")
+            logger.info(f"verify_challenge 后 payment_intent 状态: {pi_status}")
+            if pi_status in ("succeeded", "processing"):
+                return True
+            elif pi_status == "requires_action":
+                # 可能还有后续验证 (3DS)
+                logger.warning(f"verify_challenge 后仍需额外验证: {result.get('next_action', {})}")
+                return False
+            else:
+                logger.error(f"verify_challenge 后状态异常: {pi_status}")
+                return False
+        except Exception as e:
+            logger.error(f"verify_challenge 响应解析失败: {e}, raw={resp.text[:300]}")
+            return False
+
     # ── 完整支付流程 ──
     def run_payment(self) -> PaymentResult:
-        """执行完整支付链路: checkout -> fingerprint -> extract PK -> tokenize card -> fetch amount -> confirm"""
+        """执行完整支付链路: checkout -> fingerprint -> extract PK -> tokenize card -> fetch amount -> confirm -> challenge"""
         try:
             cs_id = self.create_checkout_session()
             self.fetch_stripe_fingerprint()

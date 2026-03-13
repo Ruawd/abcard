@@ -25,6 +25,10 @@
     "seat_quantity": 5,
     "promo_campaign_id": "team1dollar"
   },
+  "captcha": {
+    "api_url": "https://api.yescaptcha.com",
+    "client_key": ""
+  },
   "proxy": null,
   "session_token": null,
   "access_token": null,

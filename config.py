@@ -47,12 +47,20 @@ class TeamPlanConfig:
 
 
 @dataclass
+class CaptchaConfig:
+    """验证码打码服务配置"""
+    api_url: str = "https://api.yescaptcha.com"
+    client_key: str = ""
+
+
+@dataclass
 class Config:
     """总配置"""
     mail: MailConfig = field(default_factory=MailConfig)
     card: CardInfo = field(default_factory=CardInfo)
     billing: BillingInfo = field(default_factory=BillingInfo)
     team_plan: TeamPlanConfig = field(default_factory=TeamPlanConfig)
+    captcha: CaptchaConfig = field(default_factory=CaptchaConfig)
     proxy: Optional[str] = None
     # 已有凭证（可选，跳过注册直接支付时使用）
     session_token: Optional[str] = None
@@ -75,6 +83,8 @@ class Config:
             cfg.billing = BillingInfo(**data["billing"])
         if "team_plan" in data:
             cfg.team_plan = TeamPlanConfig(**data["team_plan"])
+        if "captcha" in data:
+            cfg.captcha = CaptchaConfig(**data["captcha"])
         cfg.proxy = data.get("proxy")
         cfg.session_token = data.get("session_token")
         cfg.access_token = data.get("access_token")
@@ -88,6 +98,7 @@ class Config:
             "card": self.card.__dict__,
             "billing": self.billing.__dict__,
             "team_plan": self.team_plan.__dict__,
+            "captcha": self.captcha.__dict__,
             "proxy": self.proxy,
             "session_token": self.session_token,
             "access_token": self.access_token,
