@@ -36,9 +36,7 @@ def create_http_session(proxy: Optional[str] = None, impersonate: str = "chrome1
     if _HAS_CFFI:
         session = CffiSession(impersonate=impersonate)
         if proxy:
-            # curl_cffi 需要 socks5h:// (带 DNS 解析) 而非 socks5://
-            p = proxy.replace("socks5://", "socks5h://") if proxy.startswith("socks5://") else proxy
-            session.proxies = {"https": p, "http": p}
+            session.proxies = {"https": proxy, "http": proxy}
         return session
     else:
         session = requests.Session()
