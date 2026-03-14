@@ -272,6 +272,22 @@ for k, v in {"log_buffer": [], "running": False, "result": None}.items():
 # 每次 rerun 先同步一次日志缓存
 pull_captured_logs()
 
+# ── widget 默认值初始化 (只在首次运行时设置) ──
+_widget_defaults = {
+    "w_exp_month": "12",
+    "w_exp_year": "2030",
+    "w_proxy": "http://172.25.16.1:7897",
+}
+for _dk, _dv in _widget_defaults.items():
+    if _dk not in st.session_state:
+        st.session_state[_dk] = _dv
+
+# ── 延迟的解析结果应用 (必须在 widget 渲染之前) ──
+if "_pending_parse" in st.session_state:
+    _pp = st.session_state.pop("_pending_parse")
+    for _pk, _pv in _pp.items():
+        st.session_state[_pk] = _pv
+
 
 # ════════════════════════════════════════
 # 顶部
@@ -286,14 +302,52 @@ with col_step2:
 with col_step3:
     do_payment = st.checkbox("提交支付", value=True)
 with col_proxy:
-    proxy = st.text_input("代理 (可选)", placeholder="socks5://127.0.0.1:1080", label_visibility="collapsed")
+    proxy = st.text_input("代理", placeholder="http://127.0.0.1:7897", key="w_proxy")
 
-# 打码服务配置
-captcha_col1, captcha_col2 = st.columns([3, 1])
-with captcha_col1:
-    captcha_key = st.text_input("🔑 YesCaptcha API Key", value="27e2aa9da9a236b2a6cfcc3fa0f045fdec2a3633104361", type="password", help="用于解决 Stripe hCaptcha 挑战验证")
-with captcha_col2:
-    captcha_api_url = st.text_input("打码 API", value="https://api.yescaptcha.com")
+# 支付模式选择
+if do_payment:
+    pm_col1, pm_col2 = st.columns([2, 3])
+    with pm_col1:
+        payment_mode = st.radio(
+            "支付模式",
+            ["🌐 浏览器模式 (推荐)", "📡 API 模式"],
+            index=0,
+            help="浏览器模式使用 Xvfb + Chrome 自动绕过 hCaptcha；API 模式通过打码平台解决",
+            horizontal=True,
+        )
+        use_browser_mode = payment_mode.startswith("🌐")
+    with pm_col2:
+        if use_browser_mode:
+            # 检查 Xvfb 状态
+            import subprocess as _sp
+            _xvfb_running = False
+            try:
+                _xvfb_pids = _sp.check_output(["pgrep", "-f", "Xvfb :99"], stderr=_sp.DEVNULL).decode().strip()
+                _xvfb_running = bool(_xvfb_pids)
+            except Exception:
+                pass
+            _display = os.environ.get("DISPLAY", "")
+            if _xvfb_running:
+                st.success("✅ Xvfb 运行中 (:99) — hCaptcha 自动绕过就绪")
+            elif _display:
+                st.info(f"💡 当前 DISPLAY={_display}，将自动启动 Xvfb :99")
+            else:
+                st.warning("⚠️ 无显示环境，将自动启动 Xvfb :99")
+        else:
+            st.info("📡 API 模式：通过 YesCaptcha 打码解决 hCaptcha")
+else:
+    use_browser_mode = False
+
+# 打码服务配置 (仅 API 模式需要)
+if do_payment and not use_browser_mode:
+    captcha_col1, captcha_col2 = st.columns([3, 1])
+    with captcha_col1:
+        captcha_key = st.text_input("🔑 YesCaptcha API Key", value="27e2aa9da9a236b2a6cfcc3fa0f045fdec2a3633104361", type="password", help="用于解决 Stripe hCaptcha 挑战验证")
+    with captcha_col2:
+        captcha_api_url = st.text_input("打码 API", value="https://api.yescaptcha.com")
+else:
+    captcha_key = ""
+    captcha_api_url = ""
 
 st.divider()
 
@@ -317,30 +371,34 @@ with cfg_col1:
 with cfg_col2:
     with st.expander("💰 账单地址", expanded=True):
         # 如果有解析出的国家，自动选择对应国家
-        _parsed_cc = st.session_state.get("_parsed_country_code", "")
-        _default_country_idx = 0
-        if _parsed_cc:
-            for i, label in enumerate(COUNTRY_MAP.keys()):
-                if label.startswith(_parsed_cc):
-                    _default_country_idx = i
-                    break
-        country_label = st.selectbox("国家", list(COUNTRY_MAP.keys()), index=_default_country_idx)
+        country_label = st.selectbox("国家", list(COUNTRY_MAP.keys()), key="w_country")
         country_code, default_currency, default_state, default_addr, default_zip = COUNTRY_MAP[country_label]
-        # 覆盖: 如果解析出了值，优先使用
-        _p_addr = st.session_state.get("_parsed_address_line1", "")
-        _p_state = st.session_state.get("_parsed_address_state", "")
-        _p_zip = st.session_state.get("_parsed_postal_code", "")
-        _p_currency = st.session_state.get("_parsed_currency", "")
+        # 当国家变更时，更新地址默认值
+        _prev_country = st.session_state.get("_prev_country", "")
+        if _prev_country and _prev_country != country_label:
+            st.session_state["w_currency"] = default_currency
+            st.session_state["w_address_line1"] = default_addr
+            st.session_state["w_address_state"] = default_state
+            st.session_state["w_postal_code"] = default_zip
+        st.session_state["_prev_country"] = country_label
         bc1, bc2 = st.columns(2)
-        billing_name = bc1.text_input("姓名", value="Test User")
-        currency = bc2.text_input("货币", value=_p_currency or default_currency)
+        billing_name = bc1.text_input("姓名", value="Test User", key="w_billing_name")
+        if "w_currency" not in st.session_state:
+            st.session_state["w_currency"] = default_currency
+        currency = bc2.text_input("货币", key="w_currency")
         bc3, bc4, bc5 = st.columns(3)
-        address_line1 = bc3.text_input("地址", value=_p_addr or default_addr)
-        address_state = bc4.text_input("州/省", value=_p_state or default_state)
-        postal_code = bc5.text_input("邮编", value=_p_zip or default_zip)
+        if "w_address_line1" not in st.session_state:
+            st.session_state["w_address_line1"] = default_addr
+        if "w_address_state" not in st.session_state:
+            st.session_state["w_address_state"] = default_state
+        if "w_postal_code" not in st.session_state:
+            st.session_state["w_postal_code"] = default_zip
+        address_line1 = bc3.text_input("地址", key="w_address_line1")
+        address_state = bc4.text_input("州/省", key="w_address_state")
+        postal_code = bc5.text_input("邮编", key="w_postal_code")
 
 if do_payment:
-    with st.expander("粘贴卡片信息 (自动识别)", expanded=False):
+    with st.expander("粘贴卡片信息 (自动识别)", expanded=True):
         paste_text = st.text_area(
             "粘贴卡片/账单文本",
             height=150,
@@ -349,23 +407,31 @@ if do_payment:
         )
         if paste_text and st.button("🔍 识别并填充", key="parse_btn"):
             parsed = _parse_card_text(paste_text)
+            # 延迟更新: 存入 _pending_parse, 下次 rerun 时在 widget 渲染前应用
+            pending = {}
             if parsed.get("card_number"):
-                st.session_state["_test_card_number"] = parsed["card_number"]
+                pending["w_card_number"] = parsed["card_number"]
             if parsed.get("exp_month"):
-                st.session_state["_test_exp_month"] = parsed["exp_month"]
+                pending["w_exp_month"] = parsed["exp_month"]
             if parsed.get("exp_year"):
-                st.session_state["_test_exp_year"] = parsed["exp_year"]
+                pending["w_exp_year"] = parsed["exp_year"]
             if parsed.get("cvv"):
-                st.session_state["_test_cvc"] = parsed["cvv"]
+                pending["w_card_cvc"] = parsed["cvv"]
             if parsed.get("address_line1"):
-                st.session_state["_parsed_address_line1"] = parsed["address_line1"]
+                pending["w_address_line1"] = parsed["address_line1"]
             if parsed.get("address_state"):
-                st.session_state["_parsed_address_state"] = parsed["address_state"]
+                pending["w_address_state"] = parsed["address_state"]
             if parsed.get("postal_code"):
-                st.session_state["_parsed_postal_code"] = parsed["postal_code"]
+                pending["w_postal_code"] = parsed["postal_code"]
             if parsed.get("country_code"):
-                st.session_state["_parsed_country_code"] = parsed["country_code"]
-                st.session_state["_parsed_currency"] = parsed.get("currency", "")
+                cc = parsed["country_code"]
+                for i, label in enumerate(COUNTRY_MAP.keys()):
+                    if label.startswith(cc):
+                        pending["w_country"] = label
+                        break
+            if parsed.get("currency"):
+                pending["w_currency"] = parsed["currency"]
+            st.session_state["_pending_parse"] = pending
             # 展示识别结果
             filled = []
             if parsed.get("card_number"):
@@ -400,21 +466,16 @@ if do_payment:
         tc_sel = st.selectbox("🧪 快速填充测试卡", ["不填充"] + list(TEST_CARDS.keys()), key="tc_sel")
         if tc_sel != "不填充":
             tc_num, tc_cvc = TEST_CARDS[tc_sel]
-            st.session_state["_test_card_number"] = tc_num
-            st.session_state["_test_cvc"] = tc_cvc
-
-        _tn = st.session_state.get("_test_card_number", "")
-        _tm = st.session_state.get("_test_exp_month", "12")
-        _ty = st.session_state.get("_test_exp_year", "2030")
-        _tc = st.session_state.get("_test_cvc", "")
+            st.session_state["w_card_number"] = tc_num
+            st.session_state["w_card_cvc"] = tc_cvc
 
         cc1, cc2, cc3, cc4 = st.columns([3, 1, 1, 1])
-        card_number = cc1.text_input("卡号", value=_tn, placeholder="真实卡号")
-        exp_month = cc2.text_input("月", value=_tm)
-        exp_year = cc3.text_input("年", value=_ty)
-        card_cvc = cc4.text_input("CVC", value=_tc, type="password")
+        card_number = cc1.text_input("卡号", placeholder="真实卡号", key="w_card_number")
+        exp_month = cc2.text_input("月", key="w_exp_month")
+        exp_year = cc3.text_input("年", key="w_exp_year")
+        card_cvc = cc4.text_input("CVC", type="password", key="w_card_cvc")
 
-        if _tn and _tn.startswith("4"):
+        if card_number and card_number.startswith("4"):
             st.caption("⚠️ Live 模式下所有测试卡都会被拒绝，仅用于验证流程")
 
 # 跳过注册时可复用已有凭证
@@ -474,9 +535,15 @@ def get_active_nodes():
     if do_register:
         active += [("邮箱创建", "mail"), ("账号注册", "register")]
     if do_checkout:
-        active += [("Checkout", "checkout"), ("指纹获取", "fingerprint")]
+        if use_browser_mode:
+            active += [("Checkout", "checkout")]
+        else:
+            active += [("Checkout", "checkout"), ("指纹获取", "fingerprint")]
     if do_payment:
-        active += [("卡片Token", "tokenize"), ("确认支付", "confirm"), ("挑战验证", "challenge")]
+        if use_browser_mode:
+            active += [("浏览器支付", "browser_pay"), ("hCaptcha", "challenge")]
+        else:
+            active += [("卡片Token", "tokenize"), ("确认支付", "confirm"), ("挑战验证", "challenge")]
     return active
 
 
@@ -564,79 +631,168 @@ with tab_run:
                 rd["email"] = auth_result.email
                 rd["steps"]["register"] = "⏭️"
 
-            # ── Checkout ──
+            # ── Checkout + 支付 ──
             if do_checkout:
                 if not auth_result:
                     raise RuntimeError("需先注册或提供凭证")
-                node_status["checkout"] = "running"; _refresh()
-                cfg.billing.email = auth_result.email
-                pf = PaymentFlow(cfg, auth_result)
-                if af:
-                    pf.session = af.session
-                cs_id = pf.create_checkout_session()
-                rd["checkout_session_id"] = cs_id
-                rd["checkout_data"] = pf.checkout_data
-                rd["steps"]["checkout"] = "✅"
-                node_status["checkout"] = "done"; _refresh()
-                pull_captured_logs()
-                log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
-                node_status["fingerprint"] = "running"; _refresh()
-                pf.fetch_stripe_fingerprint()
-                pf.extract_stripe_pk(pf.checkout_url)
-                rd["stripe_pk"] = (pf.stripe_pk[:30] + "...") if pf.stripe_pk else ""
-                rd["steps"]["fingerprint"] = "✅"
-                node_status["fingerprint"] = "done"; _refresh()
-                pull_captured_logs()
-                log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
-
-                # ── 支付 ──
-                if do_payment:
-                    node_status["tokenize"] = "running"; _refresh()
-                    pf.payment_method_id = pf.create_payment_method()
-                    rd["steps"]["tokenize"] = "✅"
-                    node_status["tokenize"] = "done"; _refresh()
+                if use_browser_mode and do_payment:
+                    # ═══ 浏览器模式: Xvfb + Chrome + 自动点击 hCaptcha ═══
+                    node_status["checkout"] = "running"; _refresh()
                     pull_captured_logs()
                     log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
-                    node_status["confirm"] = "running"; _refresh()
-                    pf.fetch_payment_page_details(cs_id)
-                    pay = pf.confirm_payment(cs_id)
-                    rd["confirm_status"] = pay.confirm_status
-                    rd["confirm_response"] = pay.confirm_response
+                    # 确保 Xvfb 运行
+                    import subprocess as _sp
+                    _xvfb_ok = False
+                    try:
+                        _sp.check_output(["pgrep", "-f", "Xvfb :99"], stderr=_sp.DEVNULL)
+                        _xvfb_ok = True
+                    except Exception:
+                        pass
+                    if not _xvfb_ok:
+                        _sp.Popen(
+                            ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-ac"],
+                            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                        )
+                        import time as _time
+                        _time.sleep(1)
+                    os.environ["DISPLAY"] = ":99"
+
+                    from browser_payment import BrowserPayment
+                    bp = BrowserPayment(
+                        proxy=cfg.proxy,
+                        headless=False,  # 有头模式在 Xvfb 上
+                        slow_mo=80,
+                    )
+
+                    browser_result = bp.run_full_flow(
+                        session_token=auth_result.session_token,
+                        access_token=auth_result.access_token,
+                        device_id=auth_result.device_id,
+                        card_number=card_number,
+                        card_exp_month=exp_month,
+                        card_exp_year=exp_year,
+                        card_cvc=card_cvc,
+                        billing_name=billing_name,
+                        billing_country=country_code,
+                        billing_zip=postal_code,
+                        billing_line1=address_line1,
+                        billing_email=auth_result.email,
+                        chatgpt_proxy=cfg.proxy,
+                        timeout=120,
+                    )
+
+                    rd["checkout_data"] = browser_result.get("checkout_data")
+                    rd["checkout_session_id"] = browser_result.get("checkout_data", {}).get("checkout_session_id", "")
+                    rd["steps"]["checkout"] = "✅"
+                    node_status["checkout"] = "done"
+                    node_status["browser_pay"] = "done"
                     pull_captured_logs()
                     log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
 
-                    # confirm 本身完成，更新节点状态
-                    # challenge 验证结果已经包含在 pay 里了 (confirm_payment 内部处理)
-                    if pay.success:
-                        rd["steps"]["confirm"] = "✅"
+                    # 判断结果
+                    if browser_result.get("success"):
+                        rd["steps"]["browser_pay"] = "✅"
                         rd["steps"]["challenge"] = "✅"
-                        node_status["confirm"] = "done"
                         node_status["challenge"] = "done"
-                    elif pay.error and "hCaptcha" in pay.error:
-                        rd["steps"]["confirm"] = "✅"  # confirm 本身成功了
-                        rd["steps"]["challenge"] = "❌"
-                        node_status["confirm"] = "done"
-                        node_status["challenge"] = "error"
-                    elif pay.error and "requires_action" in pay.error:
-                        rd["steps"]["confirm"] = "✅"
-                        rd["steps"]["challenge"] = "❌"
-                        node_status["confirm"] = "done"
-                        node_status["challenge"] = "error"
+                        rd["success"] = True
                     else:
-                        rd["steps"]["confirm"] = "❌"
-                        rd["steps"]["challenge"] = "⏭️"
-                        node_status["confirm"] = "error"
-                        node_status["challenge"] = "pending"
+                        err = browser_result.get("error", "")
+                        step = browser_result.get("step", "")
+                        if "被拒绝" in err or "declined" in err.lower():
+                            # 卡被拒绝 = hCaptcha 已通过
+                            rd["steps"]["browser_pay"] = "✅"
+                            rd["steps"]["challenge"] = "✅"
+                            node_status["challenge"] = "done"
+                        elif "hcaptcha" in step or "timeout" in step:
+                            rd["steps"]["browser_pay"] = "✅"
+                            rd["steps"]["challenge"] = "❌"
+                            node_status["browser_pay"] = "done"
+                            node_status["challenge"] = "error"
+                        else:
+                            rd["steps"]["browser_pay"] = "❌"
+                            rd["steps"]["challenge"] = "⏭️"
+                            node_status["browser_pay"] = "error"
+                            node_status["challenge"] = "pending"
 
-                    rd["success"] = pay.success
-                    rd["error"] = pay.error
+                        rd["success"] = browser_result.get("success", False)
+                        rd["error"] = err
+
+                    rd["confirm_response"] = browser_result
                     _refresh()
                     pull_captured_logs()
                     log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+
                 else:
-                    rd["success"] = True
+                    # ═══ API 模式 ═══
+                    node_status["checkout"] = "running"; _refresh()
+                    cfg.billing.email = auth_result.email
+                    pf = PaymentFlow(cfg, auth_result)
+                    if af:
+                        pf.session = af.session
+                    cs_id = pf.create_checkout_session()
+                    rd["checkout_session_id"] = cs_id
+                    rd["checkout_data"] = pf.checkout_data
+                    rd["steps"]["checkout"] = "✅"
+                    node_status["checkout"] = "done"; _refresh()
+                    pull_captured_logs()
+                    log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+
+                    node_status["fingerprint"] = "running"; _refresh()
+                    pf.fetch_stripe_fingerprint()
+                    pf.extract_stripe_pk(pf.checkout_url)
+                    rd["stripe_pk"] = (pf.stripe_pk[:30] + "...") if pf.stripe_pk else ""
+                    rd["steps"]["fingerprint"] = "✅"
+                    node_status["fingerprint"] = "done"; _refresh()
+                    pull_captured_logs()
+                    log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+
+                    # ── API 支付 ──
+                    if do_payment:
+                        node_status["tokenize"] = "running"; _refresh()
+                        pf.payment_method_id = pf.create_payment_method()
+                        rd["steps"]["tokenize"] = "✅"
+                        node_status["tokenize"] = "done"; _refresh()
+                        pull_captured_logs()
+                        log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+
+                        node_status["confirm"] = "running"; _refresh()
+                        pf.fetch_payment_page_details(cs_id)
+                        pay = pf.confirm_payment(cs_id)
+                        rd["confirm_status"] = pay.confirm_status
+                        rd["confirm_response"] = pay.confirm_response
+                        pull_captured_logs()
+                        log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+
+                        if pay.success:
+                            rd["steps"]["confirm"] = "✅"
+                            rd["steps"]["challenge"] = "✅"
+                            node_status["confirm"] = "done"
+                            node_status["challenge"] = "done"
+                        elif pay.error and "hCaptcha" in pay.error:
+                            rd["steps"]["confirm"] = "✅"
+                            rd["steps"]["challenge"] = "❌"
+                            node_status["confirm"] = "done"
+                            node_status["challenge"] = "error"
+                        elif pay.error and "requires_action" in pay.error:
+                            rd["steps"]["confirm"] = "✅"
+                            rd["steps"]["challenge"] = "❌"
+                            node_status["confirm"] = "done"
+                            node_status["challenge"] = "error"
+                        else:
+                            rd["steps"]["confirm"] = "❌"
+                            rd["steps"]["challenge"] = "⏭️"
+                            node_status["confirm"] = "error"
+                            node_status["challenge"] = "pending"
+
+                        rd["success"] = pay.success
+                        rd["error"] = pay.error
+                        _refresh()
+                        pull_captured_logs()
+                        log_area.code("\n".join(st.session_state.log_buffer[-60:]), language="log")
+                    else:
+                        rd["success"] = True
             elif do_register:
                 rd["success"] = True
 
