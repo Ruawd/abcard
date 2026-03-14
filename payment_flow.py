@@ -47,12 +47,13 @@ class PaymentResult:
 class PaymentFlow:
     """支付协议流"""
 
-    def __init__(self, config: Config, auth_result: AuthResult):
+    def __init__(self, config: Config, auth_result: AuthResult, stripe_proxy: str = None):
         self.config = config
         self.auth = auth_result
         self.session = create_http_session(proxy=config.proxy)  # ChatGPT 用 proxy
-        # Stripe 调用不走代理 (降低 Radar 触发 hCaptcha 的概率)
-        self.fingerprint = StripeFingerprint(proxy=None)
+        # Stripe 调用的代理 (None=直连, 或设为与 ChatGPT 同代理实现 IP 一致性)
+        self._stripe_proxy = stripe_proxy
+        self.fingerprint = StripeFingerprint(proxy=stripe_proxy)
         self.result = PaymentResult()
         self.stripe_pk: str = ""  # Stripe publishable key
         self.checkout_url: str = ""  # Stripe checkout URL
@@ -330,8 +331,8 @@ class PaymentFlow:
             ),
         }
 
-        # Stripe API 使用直连 (不走代理, 避免触发 hCaptcha)
-        stripe_session = create_http_session(proxy=None)
+        # Stripe API 使用配置的代理 (可能直连或走代理)
+        stripe_session = create_http_session(proxy=self._stripe_proxy)
         resp = stripe_session.post(
             "https://api.stripe.com/v1/payment_methods",
             headers=headers,
@@ -396,8 +397,7 @@ class PaymentFlow:
         """
         logger.info("[支付 3.7/5] 初始化支付页面 & 获取 expected_amount...")
 
-        # Stripe API 使用直连 (不走代理, 避免触发 hCaptcha)
-        stripe_session = create_http_session(proxy=None)
+        stripe_session = create_http_session(proxy=self._stripe_proxy)
 
         headers_form = {
             "Authorization": f"Bearer {self.stripe_pk}",
@@ -500,8 +500,7 @@ class PaymentFlow:
         }
 
         url = f"https://api.stripe.com/v1/payment_pages/{checkout_session_id}/confirm"
-        # Stripe API 用直连 (降低 Radar 触发 hCaptcha 的概率)
-        stripe_session = create_http_session(proxy=None)
+        stripe_session = create_http_session(proxy=self._stripe_proxy)
         resp = stripe_session.post(url, headers=headers, data=form_data, timeout=60)
 
         self.result.confirm_status = str(resp.status_code)
@@ -534,40 +533,51 @@ class PaymentFlow:
                     pi_id = pi.get("id", "")
                     pi_client_secret = pi.get("client_secret", "")
 
-                    # 可能需要多轮挑战
-                    max_rounds = 5
-                    for round_num in range(1, max_rounds + 1):
-                        logger.info(f"挑战验证 第{round_num}轮 (最多{max_rounds}轮)")
-                        if not (site_key and verification_url and pi_id):
-                            self.result.error = f"挑战参数不完整: site_key={bool(site_key)}, url={bool(verification_url)}"
-                            logger.error(self.result.error)
-                            break
-
-                        challenge_result = self._handle_stripe_challenge(
-                            pi_id=pi_id,
-                            site_key=site_key,
-                            rqdata=rqdata,
-                            verification_url=verification_url,
-                            client_secret=pi_client_secret,
-                        )
-
-                        if challenge_result is True:
-                            self.result.success = True
-                            logger.info("支付挑战验证完成, 支付成功!")
-                            break
-                        elif isinstance(challenge_result, dict):
-                            # 需要再来一轮: 返回了新的挑战参数
-                            site_key = challenge_result.get("site_key", site_key)
-                            rqdata = challenge_result.get("rqdata", "")
-                            verification_url = challenge_result.get("verification_url", verification_url)
-                            pi_client_secret = challenge_result.get("client_secret", pi_client_secret)
-                            logger.info(f"第{round_num}轮通过, 但 Stripe 发起新一轮挑战...")
-                            continue
-                        else:
-                            self.result.error = "hCaptcha 挑战验证失败"
-                            break
+                    # ── 策略1: 用真实浏览器处理 hCaptcha ──
+                    browser_result = self._handle_challenge_with_browser(
+                        pi_client_secret, site_key=site_key, rqdata=rqdata
+                    )
+                    if browser_result and browser_result.get("success"):
+                        self.result.success = True
+                        self.result.confirm_response = browser_result
+                        logger.info("浏览器处理 hCaptcha 成功!")
                     else:
-                        self.result.error = f"hCaptcha 挑战超过最大轮数 ({max_rounds})"
+                        browser_err = browser_result.get("error", "") if browser_result else "browser not available"
+                        logger.warning(f"浏览器处理失败: {browser_err}, 回退到打码服务...")
+
+                        # ── 策略2: YesCaptcha 打码 (回退) ──
+                        max_rounds = 5
+                        for round_num in range(1, max_rounds + 1):
+                            logger.info(f"打码 第{round_num}轮 (最多{max_rounds}轮)")
+                            if not (site_key and verification_url and pi_id):
+                                self.result.error = f"挑战参数不完整: site_key={bool(site_key)}, url={bool(verification_url)}"
+                                logger.error(self.result.error)
+                                break
+
+                            challenge_result = self._handle_stripe_challenge(
+                                pi_id=pi_id,
+                                site_key=site_key,
+                                rqdata=rqdata,
+                                verification_url=verification_url,
+                                client_secret=pi_client_secret,
+                            )
+
+                            if challenge_result is True:
+                                self.result.success = True
+                                logger.info("打码挑战验证完成, 支付成功!")
+                                break
+                            elif isinstance(challenge_result, dict):
+                                site_key = challenge_result.get("site_key", site_key)
+                                rqdata = challenge_result.get("rqdata", "")
+                                verification_url = challenge_result.get("verification_url", verification_url)
+                                pi_client_secret = challenge_result.get("client_secret", pi_client_secret)
+                                logger.info(f"第{round_num}轮通过, 但 Stripe 发起新一轮挑战...")
+                                continue
+                            else:
+                                self.result.error = "hCaptcha 挑战验证失败"
+                                break
+                        else:
+                            self.result.error = f"hCaptcha 挑战超过最大轮数 ({max_rounds})"
                 elif next_action.get("type") == "redirect_to_url":
                     logger.warning("支付需要 3DS 网页验证，无法自动完成")
                     self.result.error = "requires_3ds_redirect"
@@ -592,7 +602,233 @@ class PaymentFlow:
 
         return self.result
 
-    # ── Step 5: 处理 Stripe hCaptcha 挑战 ──
+    # ── Step 4b: 代理切换重试 confirm ──
+    def confirm_payment_with_proxy(self, checkout_session_id: str, proxy: str = None) -> PaymentResult:
+        """
+        使用指定代理重新走 tokenize + init + confirm (代理开关策略)。
+        PaymentMethod 在首次 confirm 后已被消费，必须重新创建。
+        """
+        logger.info(f"[支付 4b] 代理切换全流程重试 (proxy={proxy})...")
+
+        # 1) 重新创建 PaymentMethod (用新代理)
+        stripe_session = create_http_session(proxy=proxy)
+        card = self.config.card
+        billing = self.config.billing
+        fp = self.fingerprint.get_params()
+
+        pm_form = {
+            "type": "card",
+            "card[number]": card.number,
+            "card[cvc]": card.cvc,
+            "card[exp_month]": card.exp_month,
+            "card[exp_year]": card.exp_year,
+            "billing_details[name]": billing.name,
+            "billing_details[email]": billing.email or self.auth.email,
+            "billing_details[address][country]": billing.country,
+            "billing_details[address][line1]": billing.address_line1,
+            "billing_details[address][state]": billing.address_state,
+            "billing_details[address][postal_code]": billing.postal_code,
+            "allow_redisplay": "always",
+            "guid": fp["guid"],
+            "muid": fp["muid"],
+            "sid": fp["sid"],
+            "payment_user_agent": f"stripe.js/{self.config.stripe_build_hash}; stripe-js-v3/{self.config.stripe_build_hash}; checkout",
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.stripe_pk}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "Origin": "https://js.stripe.com",
+            "Referer": "https://js.stripe.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+            ),
+        }
+
+        resp = stripe_session.post(
+            "https://api.stripe.com/v1/payment_methods",
+            headers=headers,
+            data=pm_form,
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            self.result.error = f"代理切换: 创建 PaymentMethod 失败 ({resp.status_code})"
+            logger.error(self.result.error)
+            return self.result
+
+        new_pm_id = resp.json().get("id", "")
+        logger.info(f"代理切换: 新 PaymentMethod: {new_pm_id[:20]}...")
+
+        # 2) 重新 init (获取新 eid/checksum, 但复用原始 expected_amount)
+        init_url = f"https://api.stripe.com/v1/payment_pages/{checkout_session_id}/init"
+        init_form = {"key": self.stripe_pk, "browser_locale": "en"}
+        init_resp = stripe_session.post(init_url, headers=headers, data=init_form, timeout=30)
+        eid = ""
+        checksum = ""
+        # 复用首次 confirm 的 expected_amount (代理 IP 可能导致税率不同)
+        expected = getattr(self, '_expected_amount', "0")
+        if init_resp.status_code == 200:
+            init_data = init_resp.json()
+            eid = init_data.get("eid", "")
+            checksum = init_data.get("init_checksum", "")
+            logger.info(f"代理切换: init eid={eid[:10]}... expected_amount={expected} (复用原值)")
+
+        # 3) Confirm
+        form_data = {
+            "payment_method": new_pm_id,
+            "guid": fp["guid"],
+            "muid": fp["muid"],
+            "sid": fp["sid"],
+            "expected_amount": expected,
+            "key": self.stripe_pk,
+        }
+        if eid:
+            form_data["eid"] = eid
+        if checksum:
+            form_data["init_checksum"] = checksum
+
+        url = f"https://api.stripe.com/v1/payment_pages/{checkout_session_id}/confirm"
+        resp = stripe_session.post(url, headers=headers, data=form_data, timeout=60)
+
+        self.result.confirm_status = str(resp.status_code)
+        try:
+            self.result.confirm_response = resp.json()
+        except Exception:
+            self.result.confirm_response = {"raw": resp.text[:500]}
+
+        if resp.status_code == 200:
+            data = resp.json()
+            status = data.get("status", "")
+            pi = data.get("payment_intent") or {}
+            pi_status = pi.get("status", "")
+            next_action = pi.get("next_action", {})
+
+            if status == "complete" or (status == "open" and pi_status == "succeeded"):
+                self.result.success = True
+                self.result.error = ""
+                logger.info("代理切换 confirm 支付成功!")
+            elif pi_status == "requires_action" and next_action:
+                sdk_info = next_action.get("use_stripe_sdk", {})
+                challenge_type = sdk_info.get("type", "")
+                if challenge_type == "intent_confirmation_challenge":
+                    logger.info("代理切换 confirm 仍触发 hCaptcha，尝试打码...")
+                    stripe_js = sdk_info.get("stripe_js", {})
+                    pi_id = pi.get("id", "")
+                    pi_client_secret = pi.get("client_secret", "")
+                    challenge_result = self._handle_stripe_challenge(
+                        pi_id=pi_id,
+                        site_key=stripe_js.get("site_key", ""),
+                        rqdata=stripe_js.get("rqdata", ""),
+                        verification_url=stripe_js.get("verification_url", ""),
+                        client_secret=pi_client_secret,
+                    )
+                    if challenge_result is True:
+                        self.result.success = True
+                        self.result.error = ""
+                        logger.info("代理切换 + 打码: 支付成功!")
+                    else:
+                        self.result.error = "代理切换 confirm 后 hCaptcha 打码失败"
+                else:
+                    self.result.error = f"代理切换 confirm requires_action: {challenge_type}"
+            else:
+                self.result.error = f"代理切换 confirm 状态异常: session={status}, pi={pi_status}"
+        else:
+            error_msg = ""
+            try:
+                err_data = resp.json()
+                error_msg = err_data.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                error_msg = resp.text[:300]
+            self.result.error = f"代理切换 confirm 失败 ({resp.status_code}): {error_msg}"
+            logger.error(self.result.error)
+
+        return self.result
+
+    # ── Step 5a: 浏览器处理 hCaptcha 挑战 ──
+    def _handle_challenge_with_browser(self, pi_client_secret: str, site_key: str = "", rqdata: str = "") -> dict:
+        """
+        用真实 Chromium 浏览器处理 Stripe hCaptcha 挑战。
+        两种策略: 先试 Stripe.js handleNextAction, 再试直接 hCaptcha。
+        """
+        try:
+            from browser_challenge import BrowserChallengeSolver
+        except ImportError:
+            logger.warning("browser_challenge 模块不可用")
+            return {"success": False, "error": "browser_challenge not available"}
+
+        solver = BrowserChallengeSolver(
+            stripe_pk=self.stripe_pk,
+            proxy=self._stripe_proxy,
+            headless=False,  # 需要 WSLg 显示
+        )
+
+        # 策略1: undetected-chromedriver (最佳反检测)
+        if site_key:
+            logger.info("尝试 undetected-chromedriver 处理 hCaptcha...")
+            site_url = getattr(self, '_stripe_hosted_url', '') or self.checkout_url or "https://js.stripe.com"
+            hc_result = solver.solve_hcaptcha_uc(
+                site_key=site_key,
+                site_url=site_url,
+                rqdata=rqdata,
+                timeout=60,
+            )
+            if hc_result.get("success"):
+                # 提交浏览器 token — 必须同时发送 token 和 ekey 两个字段
+                captcha_token = hc_result["token"]
+                captcha_ekey = hc_result.get("ekey", "")
+                pi_id = pi_client_secret.split("_secret_")[0] if "_secret_" in pi_client_secret else ""
+                headers = {
+                    "Authorization": f"Bearer {self.stripe_pk}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                    "Origin": "https://js.stripe.com",
+                    "Referer": "https://js.stripe.com/",
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+                    ),
+                }
+                form_data = {
+                    "client_secret": pi_client_secret,
+                    "challenge_response_token": captcha_token,
+                    "challenge_response_ekey": captcha_ekey,
+                    "key": self.stripe_pk,
+                }
+                verify_url = f"https://api.stripe.com/v1/payment_intents/{pi_id}/verify_challenge"
+                logger.info(f"[Browser] 提交 token(len={len(captcha_token)}) + ekey({captcha_ekey[:20]}...)")
+                stripe_session = create_http_session(proxy=self._stripe_proxy)
+                resp = stripe_session.post(verify_url, headers=headers, data=form_data, timeout=60)
+                logger.info(f"[Browser] verify_challenge 状态: {resp.status_code}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pi_status = data.get("status", "")
+                    last_err = data.get("last_payment_error", {})
+                    logger.info(f"[Browser] verify 后 pi 状态: {pi_status}")
+                    if last_err:
+                        logger.info(f"[Browser] last_payment_error: {last_err.get('code', '')} - {last_err.get('message', '')[:200]}")
+                    if pi_status in ("succeeded", "processing"):
+                        return {"success": True, "status": pi_status}
+                    if pi_status == "requires_payment_method":
+                        # hCaptcha 已通过! 但卡被拒绝 — 需要新卡或重试
+                        err_msg = last_err.get("message", "card declined") if last_err else "requires new payment method"
+                        return {"success": False, "error": f"hCaptcha PASSED but card declined: {err_msg}", "hcaptcha_passed": True, "pi_status": pi_status}
+                    return {"success": False, "error": f"browser token → {pi_status}"}
+                else:
+                    try:
+                        err_detail = resp.json().get("error", {}).get("message", resp.text[:300])
+                    except Exception:
+                        err_detail = resp.text[:300]
+                    logger.warning(f"[Browser] verify_challenge 失败: {resp.status_code}: {err_detail}")
+                    return {"success": False, "error": f"verify_challenge {resp.status_code}: {err_detail}"}
+
+        # 策略2: Stripe.js handleNextAction (备选)
+        logger.info("尝试 Stripe.js handleNextAction 处理挑战...")
+        result = solver.solve(pi_client_secret, timeout=60)
+        return result
+
+    # ── Step 5b: YesCaptcha 打码处理 hCaptcha 挑战 ──
     def _handle_stripe_challenge(
         self, pi_id: str, site_key: str, rqdata: str, verification_url: str,
         client_secret: str = "",
@@ -649,11 +885,11 @@ class PaymentFlow:
         form_data = {}
         if client_secret:
             form_data["client_secret"] = client_secret
-        form_data["challenge_response_ekey"] = captcha_token
+        form_data["challenge_response_token"] = captcha_token
+        form_data["challenge_response_ekey"] = captcha_ekey
         form_data["key"] = self.stripe_pk
 
-        # Stripe verify_challenge 用直连
-        stripe_session = create_http_session(proxy=None)
+        stripe_session = create_http_session(proxy=self._stripe_proxy)
         resp = stripe_session.post(verify_url, headers=headers, data=form_data, timeout=60)
 
         logger.info(f"verify_challenge 状态: {resp.status_code}")
