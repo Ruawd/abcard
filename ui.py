@@ -429,14 +429,14 @@ if _code_info:
             st.rerun()
 
 # ── 账号来源选择 ──
-# 从数据库获取当前兑换码的成功执行记录 (用于「选择已有账号」)
+# 从数据库获取当前兑换码的有 token 的执行记录 (用于「选择已有账号」)
 _code_history = get_code_history(st.session_state.verified_code)
 _code_success_creds = []
 for _h in _code_history:
-    if _h["status"] == "success" and _h.get("result_json"):
+    if _h.get("result_json"):
         try:
             _rd = json.loads(_h["result_json"])
-            if _rd.get("email"):
+            if _rd.get("email") and _rd.get("access_token"):
                 _code_success_creds.append(_rd)
         except Exception:
             pass
@@ -928,8 +928,9 @@ with tab_run:
             st.error(f"兑换码不可用: {_vm}")
             st.stop()
 
-        # 预留一次使用额度
-        _exec_id = reserve_use(st.session_state.verified_code, plan_type=plan_type)
+        # 预留使用额度 (新注册=2, 其他=1)
+        _reserve_amount = 2 if do_register else 1
+        _exec_id = reserve_use(st.session_state.verified_code, plan_type=plan_type, amount=_reserve_amount)
         if _exec_id is None:
             st.error("兑换码额度不足")
             st.stop()
@@ -1044,27 +1045,53 @@ with tab_run:
 # ════════════════════════════════════════
 with tab_accounts:
     _history = get_code_history(st.session_state.verified_code)
-    _success_rows = [r for r in _history if r["status"] == "success" and r.get("email")]
-    if _success_rows:
-        import pandas as pd
-        df = pd.DataFrame(_success_rows)[["email", "plan_type", "created_at"]]
-        df.columns = ["邮箱", "计划", "创建时间"]
-        st.dataframe(df, hide_index=True, use_container_width=True)
-        st.caption(f"共 {len(_success_rows)} 个成功账号")
+    # 显示所有有邮箱的账号 (注册成功的, 不管支付是否成功)
+    _acct_rows = []
+    for r in _history:
+        if r.get("result_json"):
+            try:
+                rd = json.loads(r["result_json"])
+                if rd.get("email"):
+                    _acct_rows.append({
+                        "exec_id": r["id"],
+                        "email": rd["email"],
+                        "plan_type": r.get("plan_type") or "-",
+                        "status": r["status"],
+                        "created_at": r["created_at"][:19],
+                        "has_token": bool(rd.get("access_token")),
+                        "_data": rd,
+                    })
+            except Exception:
+                pass
 
-        # 查看凭证详情
-        with st.expander("查看凭证详情", expanded=False):
-            for row in _success_rows:
-                if row.get("result_json"):
-                    try:
-                        rd = json.loads(row["result_json"])
-                        st.markdown(f"**{row['email']}**")
-                        st.json({k: (v[:50] + "..." if isinstance(v, str) and len(v) > 60 else v)
-                                 for k, v in rd.items() if k != "steps"})
-                    except Exception:
-                        pass
+    if _acct_rows:
+        import pandas as pd
+        _disp_rows = []
+        for a in _acct_rows:
+            _disp_rows.append({
+                "邮箱": a["email"],
+                "计划": a["plan_type"],
+                "支付": "✅ 成功" if a["status"] == "success" else "❌ 失败",
+                "时间": a["created_at"],
+            })
+        st.dataframe(pd.DataFrame(_disp_rows), hide_index=True, use_container_width=True)
+        st.caption(f"共 {len(_acct_rows)} 个账号")
+
+        st.divider()
+        for idx, acct in enumerate(_acct_rows):
+            _data = acct["_data"]
+            with st.expander(f"{acct['email']}  {'✅' if acct['status'] == 'success' else '❌'}", expanded=False):
+                if _data.get("access_token"):
+                    st.code(
+                        f"access_token: {_data.get('access_token', 'N/A')}\n"
+                        f"session_token: {_data.get('session_token', 'N/A')}\n"
+                        f"device_id: {_data.get('device_id', 'N/A')}",
+                        language="yaml",
+                    )
+                else:
+                    st.caption("无 Token 信息")
     else:
-        st.info("暂无成功的账号。执行完成后自动显示。")
+        st.info("暂无已注册的账号。执行完成后自动显示。")
 
     if st.button("刷新", key="ref_acc"):
         st.rerun()

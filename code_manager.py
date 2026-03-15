@@ -59,33 +59,32 @@ def validate_code(code: str) -> tuple[bool, str]:
     return True, f"有效 (剩余 {remaining}/{row['total_uses']} 次)"
 
 
-def reserve_use(code: str, plan_type: str = "") -> Optional[int]:
+def reserve_use(code: str, plan_type: str = "", amount: int = 1) -> Optional[int]:
     """
-    预留一次使用额度，创建 pending 执行记录。
-    立即增加 used_count（先扣），失败时在 complete_use 中回退。
+    预留使用额度，创建 pending 执行记录。
+    立即增加 used_count（先扣），失败时在 complete_use 中部分回退。
+    amount: 扣减数量（新注册=2, 其他=1）
     返回 execution_id，如果码无效返回 None。
     """
     code = code.strip()
     now = datetime.now().isoformat()
     with get_db() as conn:
-        # 原子性检查并扣减
         row = conn.execute("SELECT * FROM codes WHERE code = ?", (code,)).fetchone()
         if not row:
             return None
         if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) < datetime.now():
             return None
-        if row["used_count"] >= row["total_uses"]:
+        if row["used_count"] + amount > row["total_uses"]:
             return None
 
-        # 先扣
         conn.execute(
-            "UPDATE codes SET used_count = used_count + 1 WHERE code = ?",
-            (code,),
+            "UPDATE codes SET used_count = used_count + ? WHERE code = ?",
+            (amount, code),
         )
         cursor = conn.execute(
-            "INSERT INTO executions (code, plan_type, status, created_at, updated_at) "
-            "VALUES (?, ?, 'pending', ?, ?)",
-            (code, plan_type, now, now),
+            "INSERT INTO executions (code, plan_type, status, error_msg, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', ?, ?, ?)",
+            (code, plan_type, str(amount), now, now),
         )
         return cursor.lastrowid
 
@@ -127,27 +126,35 @@ def complete_use(execution_id: int, success: bool, email: str = "",
     """
     完成执行：
     - 成功: 保持已扣减的额度, status='success'
-    - 失败: 回退额度 (used_count -= 1), status='failed'
+    - 失败: 回退部分额度 (保留 1 次扣减, 返还多余的), status='failed'
+      例: 新注册扣了2 → 失败返还1 → 净消耗1
     """
     now = datetime.now().isoformat()
     status = "success" if success else "failed"
 
     with get_db() as conn:
+        # 获取预留时的扣减数量 (存在 error_msg 字段中作为临时存储)
+        row = conn.execute(
+            "SELECT code, error_msg FROM executions WHERE id=?", (execution_id,)
+        ).fetchone()
+
         # 更新执行记录
         conn.execute(
             "UPDATE executions SET status=?, email=?, error_msg=?, result_json=?, updated_at=? "
             "WHERE id=?",
             (status, email, error_msg, result_json, now, execution_id),
         )
-        # 失败时回退额度
-        if not success:
-            row = conn.execute(
-                "SELECT code FROM executions WHERE id=?", (execution_id,)
-            ).fetchone()
-            if row:
+        # 失败时回退多余额度
+        if not success and row:
+            try:
+                reserved_amount = int(row["error_msg"] or "1")
+            except (ValueError, TypeError):
+                reserved_amount = 1
+            refund = max(reserved_amount - 1, 0)  # 保留1, 退还多余的
+            if refund > 0:
                 conn.execute(
-                    "UPDATE codes SET used_count = MAX(used_count - 1, 0) WHERE code=?",
-                    (row["code"],),
+                    "UPDATE codes SET used_count = MAX(used_count - ?, 0) WHERE code=?",
+                    (refund, row["code"]),
                 )
 
 
