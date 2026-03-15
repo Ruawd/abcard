@@ -6,6 +6,7 @@ dist/
 build/
 .eggs/
 *.egg
+.pytest_cache/
 
 # 虚拟环境
 venv/
@@ -20,16 +21,22 @@ env/
 
 # 测试输出 (包含敏感凭证)
 test_outputs/
+outputs/
 logs/
+*.log
 
 # 配置 (包含密钥)
 config.json
+
+# 开发测试脚本 (包含硬编码凭证)
+dev_tests/
+
+# 浏览器临时 profile
+.browser_profile/
+.browser_pay_profile/
+.uc_profile/
 
 # OS
 .DS_Store
 Thumbs.db
 *:Zone.Identifier
-
-# 临时测试文件
-test_confirm_only.py
-outputs/

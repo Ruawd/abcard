@@ -353,8 +353,8 @@ pull_captured_logs()
 _widget_defaults = {
     "w_exp_month": "12",
     "w_exp_year": "2030",
-    "w_proxy": "http://172.25.16.1:7897",
-    "w_billing_name": "Test User",
+    "w_proxy": "",
+    "w_billing_name": "",
 }
 for _dk, _dv in _widget_defaults.items():
     if _dk not in st.session_state:
@@ -463,18 +463,18 @@ elif account_source == "手动输入 Token":
 if do_register:
     with st.expander("邮箱配置", expanded=True):
         _mc1, _mc2, _mc3 = st.columns(3)
-        mail_worker = _mc1.text_input("Worker API", value="https://apimail.mkai.de5.net", key="w_mail_worker_reg")
-        mail_domain = _mc2.text_input("邮箱域名", value="mkai.de5.net", key="w_mail_domain_reg")
-        mail_token = _mc3.text_input("邮箱 Token", value="ma123999", type="password", key="w_mail_token_reg")
+        mail_worker = _mc1.text_input("Worker API", placeholder="https://mail-api.example.com", key="w_mail_worker_reg")
+        mail_domain = _mc2.text_input("邮箱域名", placeholder="example.com", key="w_mail_domain_reg")
+        mail_token = _mc3.text_input("邮箱 Token", placeholder="your-mail-token", type="password", key="w_mail_token_reg")
 
 
 # 默认值 (非开发者模式下不显示这些设置)
 use_browser_mode = True
 captcha_key = ""
 captcha_api_url = ""
-mail_worker = "https://apimail.mkai.de5.net"
-mail_domain = "mkai.de5.net"
-mail_token = "ma123999"
+mail_worker = ""
+mail_domain = ""
+mail_token = ""
 # 计划类型选择 (始终可见)
 plan_type_label = st.radio(
     "选择计划",
@@ -488,7 +488,7 @@ if plan_type == "plus":
     seat_quantity = 0
     promo_campaign = "plus-1-month-free"
 else:
-    workspace_name = "Artizancloud"
+    workspace_name = "MyWorkspace"
     seat_quantity = 5
     promo_campaign = "team-1-month-free"
 
@@ -522,20 +522,20 @@ if dev_mode:
         if not use_browser_mode:
             captcha_col1, captcha_col2 = st.columns([3, 1])
             with captcha_col1:
-                captcha_key = st.text_input("YesCaptcha API Key", value="27e2aa9da9a236b2a6cfcc3fa0f045fdec2a3633104361", type="password")
+                captcha_key = st.text_input("YesCaptcha API Key", placeholder="your-yescaptcha-key", type="password")
             with captcha_col2:
                 captcha_api_url = st.text_input("打码 API", value="https://api.yescaptcha.com")
 
         st.markdown("---")
         st.markdown("**邮箱 & 计划设置**")
         if not do_register:
-            mail_worker = st.text_input("邮箱 Worker", value="https://apimail.mkai.de5.net", key="w_mail_worker_dev")
+            mail_worker = st.text_input("邮箱 Worker", placeholder="https://mail-api.example.com", key="w_mail_worker_dev")
             adv_mc1, adv_mc2 = st.columns(2)
-            mail_domain = adv_mc1.text_input("邮箱域名", value="mkai.de5.net", key="w_mail_domain_dev")
-            mail_token = adv_mc2.text_input("邮箱 Token", value="ma123999", type="password", key="w_mail_token_dev")
+            mail_domain = adv_mc1.text_input("邮箱域名", placeholder="example.com", key="w_mail_domain_dev")
+            mail_token = adv_mc2.text_input("邮箱 Token", placeholder="your-mail-token", type="password", key="w_mail_token_dev")
         if plan_type == "team":
             adv_tc1, adv_tc2, adv_tc3 = st.columns(3)
-            workspace_name = adv_tc1.text_input("Workspace", value="Artizancloud")
+            workspace_name = adv_tc1.text_input("Workspace", value="MyWorkspace")
             seat_quantity = adv_tc2.number_input("席位数", min_value=2, max_value=50, value=5)
             promo_campaign = adv_tc3.text_input("活动 ID", value="team-1-month-free")
         else:
@@ -552,7 +552,7 @@ if do_payment:
         paste_text = st.text_area(
             "粘贴卡片/账单文本",
             height=120,
-            placeholder="支持两种格式:\n\n格式1 (键值对):\n卡号: 5349336326843395\n有效期: 0332\nCVV: 667\n姓名: Victoria Peterson\n地址: 863 Potosi Street\n城市: Farmington\n州: MO\n邮编: 63640\n国家: United States\n\n格式2 (纯文本):\n4462 2200 0462 4356\n03/29\nCVV 173\n账单地址\nLangley House, London, England, N2 8EY, UK",
+            placeholder="支持两种格式:\n\n格式1 (键值对):\n卡号: 4242424242424242\n有效期: 1230\nCVV: 123\n姓名: John Smith\n地址: 123 Main Street\n城市: San Francisco\n州: CA\n邮编: 94102\n国家: United States\n\n格式2 (纯文本):\n4242 4242 4242 4242\n12/30\nCVV 123",
             key="paste_card_text",
         )
         if st.button("识别并填充", key="parse_btn", disabled=not paste_text):

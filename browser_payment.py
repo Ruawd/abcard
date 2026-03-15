@@ -41,7 +41,7 @@ class BrowserPayment:
                                 device_id: str, chatgpt_proxy: str = None,
                                 billing_country: str = "US",
                                 billing_currency: str = "USD",
-                                workspace_name: str = "Artizancloud",
+                                workspace_name: str = "MyWorkspace",
                                 seat_quantity: int = 5,
                                 plan_type: str = "team") -> dict:
         """
@@ -870,12 +870,15 @@ class BrowserPayment:
 
         logger.info(f"[Solver] 开始打码: sitekey={real_site_key[:20]}... site_url={real_site_url} rqdata={bool(rqdata)}")
 
-        # YesCaptcha 配置
-        YESCAPTCHA_KEY = "27e2aa9da9a236b2a6cfcc3fa0f045fdec2a3633104361"
+        # YesCaptcha 配置 - 应通过外部配置传入
+        captcha_key = getattr(self, '_captcha_client_key', '') or os.environ.get('YESCAPTCHA_KEY', '')
+        if not captcha_key:
+            logger.error("[Solver] 未配置 YesCaptcha API Key")
+            return None
         from captcha_solver import CaptchaSolver
         solver = CaptchaSolver(
-            api_url="https://api.yescaptcha.com",
-            client_key=YESCAPTCHA_KEY,
+            api_url=getattr(self, '_captcha_api_url', '') or "https://api.yescaptcha.com",
+            client_key=captcha_key,
         )
 
         captcha_result = solver.solve_hcaptcha(
@@ -1565,7 +1568,7 @@ class BrowserPayment:
         billing_state: str = "",
         billing_email: str = "",
         billing_currency: str = "",
-        workspace_name: str = "Artizancloud",
+        workspace_name: str = "MyWorkspace",
         seat_quantity: int = 5,
         chatgpt_proxy: str = None,
         timeout: int = 120,

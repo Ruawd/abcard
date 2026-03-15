@@ -10,6 +10,26 @@
 - **Web UI** — 粘贴卡片信息即可操作，支持选择已有账号或手动输入 Token
 - **计划选择** — 支持 Business (团队版 5席位 $0) 和 Plus (个人版 $0)
 
+## 配置
+
+复制配置模板并填写你的凭证:
+
+```bash
+cp config.example.json config.json
+```
+
+编辑 `config.json` 填写:
+- `mail.worker_domain` / `mail.admin_token` / `mail.email_domain` — 临时邮箱服务
+- `card` — 信用卡信息
+- `billing` — 账单地址
+- `captcha.client_key` — YesCaptcha API Key (可选, API 模式才需要)
+- `proxy` — 代理地址
+
+或通过环境变量设置:
+```bash
+export YESCAPTCHA_KEY="your-key"  # 可选
+```
+
 ## 快速开始
 
 ### 1. 安装依赖
@@ -110,13 +130,14 @@ auto_bindcard/
 ├── payment_flow.py        # API 模式支付 (备用)
 ├── http_client.py         # HTTP 客户端 (curl_cffi)
 ├── stripe_fingerprint.py  # Stripe 设备指纹
+├── browser_challenge.py   # hCaptcha 绕过策略
+├── captcha_solver.py      # YesCaptcha 打码服务
 ├── logger.py              # 日志 & 结果持久化
 ├── main.py                # CLI 入口
-├── test_outputs/          # 凭证 & 结果文件
-│   ├── credentials_*.json # 注册凭证
-│   ├── accounts.csv       # 账号列表
-│   └── history.csv        # 执行历史
-└── outputs/               # 运行输出
+├── test_all.py            # 单元测试
+├── config.example.json    # 配置模板
+├── requirements.txt
+└── README.md
 ```
 
 ## 环境要求

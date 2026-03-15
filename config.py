@@ -10,9 +10,9 @@ from typing import Optional
 @dataclass
 class MailConfig:
     """邮箱服务配置"""
-    worker_domain: str = "https://apimail.mkai.de5.net"
-    admin_token: str = "ma123999"
-    email_domain: str = "mkai.de5.net"
+    worker_domain: str = ""
+    admin_token: str = ""
+    email_domain: str = ""
 
 
 @dataclass
@@ -40,7 +40,7 @@ class BillingInfo:
 class TeamPlanConfig:
     """团队计划配置"""
     plan_name: str = "chatgptteamplan"
-    workspace_name: str = "Artizancloud"
+    workspace_name: str = "MyWorkspace"
     price_interval: str = "month"
     seat_quantity: int = 5
     promo_campaign_id: str = "team0dollar"
