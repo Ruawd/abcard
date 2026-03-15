@@ -62,19 +62,30 @@ def validate_code(code: str) -> tuple[bool, str]:
 def reserve_use(code: str, plan_type: str = "") -> Optional[int]:
     """
     预留一次使用额度，创建 pending 执行记录。
-    不增加 used_count（仅在成功后增加）。
+    立即增加 used_count（先扣），失败时在 complete_use 中回退。
     返回 execution_id，如果码无效返回 None。
     """
-    valid, _ = validate_code(code)
-    if not valid:
-        return None
-
+    code = code.strip()
     now = datetime.now().isoformat()
     with get_db() as conn:
+        # 原子性检查并扣减
+        row = conn.execute("SELECT * FROM codes WHERE code = ?", (code,)).fetchone()
+        if not row:
+            return None
+        if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) < datetime.now():
+            return None
+        if row["used_count"] >= row["total_uses"]:
+            return None
+
+        # 先扣
+        conn.execute(
+            "UPDATE codes SET used_count = used_count + 1 WHERE code = ?",
+            (code,),
+        )
         cursor = conn.execute(
             "INSERT INTO executions (code, plan_type, status, created_at, updated_at) "
             "VALUES (?, ?, 'pending', ?, ?)",
-            (code.strip(), plan_type, now, now),
+            (code, plan_type, now, now),
         )
         return cursor.lastrowid
 
@@ -115,8 +126,8 @@ def complete_use(execution_id: int, success: bool, email: str = "",
                  error_msg: str = "", result_json: str = ""):
     """
     完成执行：
-    - 成功: used_count += 1, status='success'
-    - 失败: 不增加 used_count, status='failed'
+    - 成功: 保持已扣减的额度, status='success'
+    - 失败: 回退额度 (used_count -= 1), status='failed'
     """
     now = datetime.now().isoformat()
     status = "success" if success else "failed"
@@ -128,14 +139,14 @@ def complete_use(execution_id: int, success: bool, email: str = "",
             "WHERE id=?",
             (status, email, error_msg, result_json, now, execution_id),
         )
-        # 仅成功时增加 used_count
-        if success:
+        # 失败时回退额度
+        if not success:
             row = conn.execute(
                 "SELECT code FROM executions WHERE id=?", (execution_id,)
             ).fetchone()
             if row:
                 conn.execute(
-                    "UPDATE codes SET used_count = used_count + 1 WHERE code=?",
+                    "UPDATE codes SET used_count = MAX(used_count - 1, 0) WHERE code=?",
                     (row["code"],),
                 )
 

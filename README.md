@@ -167,7 +167,7 @@ python3 admin_cli.py info XXXX-XXXX-XXXX
 python3 admin_cli.py history XXXX-XXXX-XXXX
 ```
 
-用户打开 Web UI 后需要输入兑换码才能使用。**失败不扣次数**，仅成功时消耗额度。
+用户打开 Web UI 后需要输入兑换码才能使用。执行时**立即扣减额度**，失败或终止时**自动回退**，仅成功保持扣减。
 ```
 
 ## 环境要求
