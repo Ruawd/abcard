@@ -9,9 +9,10 @@ from typing import Optional
 
 @dataclass
 class MailConfig:
-    """邮箱服务配置"""
+    """邮箱服务配置（Cloud Mail）"""
     worker_domain: str = ""
-    admin_token: str = ""
+    admin_email: str = ""
+    admin_password: str = ""
     email_domain: str = ""
 
 

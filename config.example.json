@@ -1,7 +1,8 @@
 {
   "mail": {
-    "worker_domain": "https://your-mail-worker.example.com",
-    "admin_token": "your-admin-token",
+    "worker_domain": "https://your-cloud-mail.example.com",
+    "admin_email": "admin@your-domain.com",
+    "admin_password": "your-admin-password",
     "email_domain": "your-domain.com"
   },
   "card": {

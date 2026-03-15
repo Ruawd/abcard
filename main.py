@@ -76,7 +76,8 @@ def run_full_flow(config: Config, skip_register: bool = False):
     else:
         mail = MailProvider(
             worker_domain=config.mail.worker_domain,
-            admin_token=config.mail.admin_token,
+            admin_email=config.mail.admin_email,
+            admin_password=config.mail.admin_password,
             email_domain=config.mail.email_domain,
         )
         auth_result = auth_flow.run_register(mail)

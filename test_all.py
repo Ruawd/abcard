@@ -60,7 +60,7 @@ class TestMailProvider(unittest.TestCase):
     """邮箱服务测试"""
 
     def test_random_name_format(self):
-        mp = MailProvider("https://test.com", "token", "test.com")
+        mp = MailProvider("https://test.com", "admin@test.com", "password", "test.com")
         name = mp._random_name()
         self.assertTrue(len(name) >= 7)
         self.assertTrue(name[0].isalpha())
@@ -80,18 +80,18 @@ class TestMailProvider(unittest.TestCase):
     @patch.object(MailProvider, '_fetch_emails')
     def test_wait_for_otp_success(self, mock_fetch):
         mock_fetch.return_value = [
-            {"source": "noreply@openai.com", "raw": "Your code is 999888"}
+            {"sendEmail": "noreply@openai.com", "text": "Your code is 999888", "content": ""}
         ]
-        mp = MailProvider("https://test.com", "token", "test.com")
-        mp.jwt = "fake_jwt"
+        mp = MailProvider("https://test.com", "admin@test.com", "password", "test.com")
+        mp.api_token = "fake_token"
         otp = mp.wait_for_otp("test@test.com", timeout=5)
         self.assertEqual(otp, "999888")
 
     @patch.object(MailProvider, '_fetch_emails')
     def test_wait_for_otp_timeout(self, mock_fetch):
         mock_fetch.return_value = []
-        mp = MailProvider("https://test.com", "token", "test.com")
-        mp.jwt = "fake_jwt"
+        mp = MailProvider("https://test.com", "admin@test.com", "password", "test.com")
+        mp.api_token = "fake_token"
         with self.assertRaises(TimeoutError):
             mp.wait_for_otp("test@test.com", timeout=1)
 

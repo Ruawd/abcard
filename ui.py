@@ -634,10 +634,12 @@ elif account_source == "手动输入 Token":
 # ── 注册模式下显示邮箱配置 ──
 if do_register:
     with st.expander("邮箱配置", expanded=True):
-        _mc1, _mc2, _mc3 = st.columns(3)
+        _mc1, _mc2 = st.columns(2)
         mail_worker = _mc1.text_input("Worker API", placeholder="https://mail-api.example.com", key="w_mail_worker_reg")
         mail_domain = _mc2.text_input("邮箱域名", placeholder="example.com", key="w_mail_domain_reg")
-        mail_token = _mc3.text_input("密码", placeholder="your-mail-token", type="password", key="w_mail_token_reg")
+        _mc3, _mc4 = st.columns(2)
+        mail_email = _mc3.text_input("管理员邮箱", placeholder="admin@example.com", key="w_mail_email_reg")
+        mail_password = _mc4.text_input("管理员密码", placeholder="your-admin-password", type="password", key="w_mail_password_reg")
 
 
 # 默认值 (非开发者模式下不显示这些设置)
@@ -648,7 +650,8 @@ if not do_register:
     # 非注册模式时，邮箱配置使用空默认值 (开发者模式下有单独的输入框)
     mail_worker = ""
     mail_domain = ""
-    mail_token = ""
+    mail_email = ""
+    mail_password = ""
 # 计划类型选择 (始终可见)
 plan_type_label = st.radio(
     "选择计划",
@@ -706,7 +709,9 @@ if dev_mode:
             mail_worker = st.text_input("邮箱 Worker", placeholder="https://mail-api.example.com", key="w_mail_worker_dev")
             adv_mc1, adv_mc2 = st.columns(2)
             mail_domain = adv_mc1.text_input("邮箱域名", placeholder="example.com", key="w_mail_domain_dev")
-            mail_token = adv_mc2.text_input("密码", placeholder="your-mail-token", type="password", key="w_mail_token_dev")
+            adv_mc3, adv_mc4 = st.columns(2)
+            mail_email = adv_mc3.text_input("管理员邮箱", placeholder="admin@example.com", key="w_mail_email_dev")
+            mail_password = adv_mc4.text_input("管理员密码", placeholder="your-admin-password", type="password", key="w_mail_password_dev")
         if plan_type == "team":
             adv_tc1, adv_tc2, adv_tc3 = st.columns(3)
             workspace_name = adv_tc1.text_input("Workspace", value="MyWorkspace")
@@ -901,7 +906,8 @@ def _run_flow_thread(rd, cs):
         cfg.proxy = cs["proxy"]
         cfg.mail.email_domain = cs["mail_domain"]
         cfg.mail.worker_domain = cs["mail_worker"]
-        cfg.mail.admin_token = cs["mail_token"]
+        cfg.mail.admin_email = cs["mail_email"]
+        cfg.mail.admin_password = cs["mail_password"]
         cfg.team_plan.workspace_name = cs["workspace_name"]
         cfg.team_plan.seat_quantity = cs["seat_quantity"]
         cfg.team_plan.promo_campaign_id = cs["promo_campaign"]
@@ -920,7 +926,7 @@ def _run_flow_thread(rd, cs):
         af = None
 
         if cs["do_register"]:
-            mp = MailProvider(worker_domain=cfg.mail.worker_domain, admin_token=cfg.mail.admin_token, email_domain=cfg.mail.email_domain)
+            mp = MailProvider(worker_domain=cfg.mail.worker_domain, admin_email=cfg.mail.admin_email, admin_password=cfg.mail.admin_password, email_domain=cfg.mail.email_domain)
             af = AuthFlow(cfg)
             auth_result = af.run_register(mp)
             rd["email"] = auth_result.email
@@ -1042,8 +1048,10 @@ with tab_run:
                 _errors.append("请填写邮箱 Worker API 地址")
             if not mail_domain:
                 _errors.append("请填写邮箱域名")
-            if not mail_token:
-                _errors.append("请填写密码")
+            if not mail_email:
+                _errors.append("请填写管理员邮箱")
+            if not mail_password:
+                _errors.append("请填写管理员密码")
         elif use_existing_creds and do_checkout:
             if not cred_access_token:
                 _errors.append("请提供 access_token")
@@ -1082,7 +1090,7 @@ with tab_run:
 
         st.session_state._flow_config = {
             "proxy": proxy or None,
-            "mail_domain": mail_domain, "mail_worker": mail_worker, "mail_token": mail_token,
+            "mail_domain": mail_domain, "mail_worker": mail_worker, "mail_email": mail_email, "mail_password": mail_password,
             "workspace_name": workspace_name, "seat_quantity": seat_quantity, "promo_campaign": promo_campaign,
             "plan_type": plan_type,
             "captcha_api_url": captcha_api_url, "captcha_key": captcha_key,
