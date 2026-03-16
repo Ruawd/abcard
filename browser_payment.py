@@ -1390,6 +1390,42 @@ class BrowserPayment:
                 page = context.new_page()
                 page.set_default_timeout(timeout * 1000)
 
+                # ── CDP 反检测补丁 (关键! CF 编排脚本会检测这些特征) ──
+                # 没有这些补丁，CF Turnstile 会拒绝渲染，导致 checkout 永远卡在 "Just a moment..."
+                try:
+                    cdp_session = context.new_cdp_session(page)
+                    cdp_session.send("Page.addScriptToEvaluateOnNewDocument", {
+                        "source": """
+                            // 隐藏 webdriver 标志 (最关键)
+                            Object.defineProperty(navigator, 'webdriver', {get: () => false});
+                            // 伪造 plugins 列表 (Chrome 正常有 3-5 个插件)
+                            Object.defineProperty(navigator, 'plugins', {
+                                get: () => [
+                                    {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer'},
+                                    {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
+                                    {name: 'Native Client', filename: 'internal-nacl-plugin'},
+                                ],
+                            });
+                            // 伪造 languages
+                            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                            // chrome.runtime 必须存在 (CDP 连接的 Chrome 可能缺失)
+                            if (!window.chrome) window.chrome = {};
+                            if (!window.chrome.runtime) window.chrome.runtime = {id: undefined};
+                            window.chrome.loadTimes = function(){};
+                            window.chrome.csi = function(){};
+                            // permissions.query 补丁 (防止检测 notifications permission)
+                            const originalQuery = window.navigator.permissions.query;
+                            window.navigator.permissions.query = (parameters) => (
+                                parameters.name === 'notifications' ?
+                                    Promise.resolve({state: Notification.permission}) :
+                                    originalQuery(parameters)
+                            );
+                        """
+                    })
+                    logger.info("[Checkout] CDP 反检测补丁已注入")
+                except Exception as _cdp_e:
+                    logger.warning(f"[Checkout] CDP 补丁注入失败: {_cdp_e}")
+
                 # Step 1: 先访问 chatgpt.com 通过 Cloudflare
                 logger.info("[Checkout] 通过 Cloudflare...")
                 page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
