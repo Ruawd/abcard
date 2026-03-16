@@ -1429,6 +1429,31 @@ class BrowserPayment:
                 _post_nav_url = page.url
                 logger.info(f"[Checkout] checkout 页面加载后 URL: {_post_nav_url}")
 
+                # Step 2.5: 检测 checkout 页面的 Cloudflare 挑战
+                _cf_checkout_title = page.title()
+                if "请稍候" in _cf_checkout_title or "Just a moment" in _cf_checkout_title or "__cf_chl_rt_tk" in _post_nav_url:
+                    logger.info("[Checkout] checkout 页面触发 Cloudflare 验证，等待通过...")
+                    _cf2_passed = False
+                    for _cf2_wait in range(30):  # 最多 90 秒
+                        time.sleep(3)
+                        _cf2_title = page.title()
+                        _cf2_url = page.url
+                        # 检查 CF 是否已通过 (标题不再是等待页面，且页面有实际内容)
+                        if "请稍候" not in _cf2_title and "Just a moment" not in _cf2_title:
+                            _cf2_body = page.evaluate("document.body ? document.body.innerText.substring(0, 100) : ''")
+                            if _cf2_body.strip():  # 页面有内容，说明 CF 通过了
+                                logger.info(f"[Checkout] Cloudflare 二次验证已通过 ({(_cf2_wait+1)*3}s) title={_cf2_title[:30]}")
+                                _cf2_passed = True
+                                break
+                        if _cf2_wait % 5 == 4:
+                            logger.info(f"[Checkout] CF 二次等待中... ({(_cf2_wait+1)*3}s) title={_cf2_title[:30]}")
+                    if not _cf2_passed:
+                        _cf2_body = page.evaluate("document.body ? document.body.innerText.substring(0, 300) : ''")
+                        logger.warning(f"[Checkout] Cloudflare 二次验证超时! body={_cf2_body[:200]}")
+                    # 更新 URL
+                    _post_nav_url = page.url
+                    time.sleep(2)
+
                 # 检查是否被重定向回首页
                 if "/checkout/" not in _post_nav_url:
                     body_text = page.evaluate("document.body ? document.body.innerText.substring(0, 300) : ''")
