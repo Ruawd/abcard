@@ -1447,42 +1447,32 @@ class BrowserPayment:
                                 _cf2_passed = True
                                 break
 
-                        # 尝试点击 Cloudflare Turnstile checkbox
+                        # 尝试点击 Cloudflare Turnstile checkbox (跨域 iframe 无法访问 DOM，使用坐标点击)
                         if not _turnstile_clicked or _cf2_wait % 5 == 0:
                             try:
-                                for frame in page.frames:
-                                    frame_url = frame.url
-                                    if "challenges.cloudflare.com" not in frame_url:
+                                # 通过 src 属性直接查找 Turnstile iframe 元素
+                                _cf_iframes = page.query_selector_all('iframe[src*="challenges.cloudflare.com"]')
+                                if not _cf_iframes:
+                                    # 回退：检查所有 iframe 的 src
+                                    for _iel in page.query_selector_all('iframe'):
+                                        _src = _iel.get_attribute('src') or ''
+                                        if 'challenges.cloudflare.com' in _src or 'turnstile' in _src:
+                                            _cf_iframes = [_iel]
+                                            break
+                                for _cf_iframe in _cf_iframes:
+                                    box = _cf_iframe.bounding_box()
+                                    if not box or box["width"] < 10 or box["height"] < 10:
                                         continue
-                                    logger.info(f"[Checkout] 发现 Turnstile frame: {frame_url[:80]}...")
-                                    # 尝试点击 Turnstile checkbox
-                                    for sel in ['#challenge-stage input[type="checkbox"]', 'input[type="checkbox"]',
-                                                '.cb-i', '#challenge-stage', '[id*="turnstile"]', 'label']:
-                                        try:
-                                            el = frame.query_selector(sel)
-                                            if el:
-                                                el.click()
-                                                _turnstile_clicked = True
-                                                logger.info(f"[Checkout] Turnstile checkbox 已点击: {sel}")
-                                                break
-                                        except Exception:
-                                            continue
-                                    # 如果没找到选择器，尝试通过 iframe box 坐标点击
                                     if not _turnstile_clicked:
-                                        for iframe_el in page.query_selector_all('iframe'):
-                                            try:
-                                                cf = iframe_el.content_frame()
-                                                if cf and "challenges.cloudflare.com" in cf.url:
-                                                    box = iframe_el.bounding_box()
-                                                    if box and box["width"] > 20 and box["height"] > 20:
-                                                        page.mouse.click(box["x"] + 28, box["y"] + 22)
-                                                        _turnstile_clicked = True
-                                                        logger.info(f"[Checkout] Turnstile iframe 中心已点击 ({box['width']:.0f}x{box['height']:.0f})")
-                                                        break
-                                            except Exception:
-                                                continue
-                                    if _turnstile_clicked:
-                                        break
+                                        logger.info(f"[Checkout] 发现 Turnstile iframe: {box['width']:.0f}x{box['height']:.0f} at ({box['x']:.0f},{box['y']:.0f})")
+                                    # Turnstile checkbox 在 iframe 左侧 (约 x+28, y 居中)
+                                    click_x = box["x"] + 28
+                                    click_y = box["y"] + box["height"] / 2
+                                    page.mouse.click(click_x, click_y)
+                                    _turnstile_clicked = True
+                                    logger.info(f"[Checkout] Turnstile 已点击坐标 ({click_x:.0f}, {click_y:.0f})")
+                                    time.sleep(2)
+                                    break
                             except Exception as _te:
                                 logger.debug(f"[Checkout] Turnstile 检测异常: {_te}")
 
