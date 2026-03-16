@@ -1434,7 +1434,8 @@ class BrowserPayment:
                 if "请稍候" in _cf_checkout_title or "Just a moment" in _cf_checkout_title or "__cf_chl_rt_tk" in _post_nav_url:
                     logger.info("[Checkout] checkout 页面触发 Cloudflare 验证，等待通过...")
                     _cf2_passed = False
-                    for _cf2_wait in range(30):  # 最多 90 秒
+                    _turnstile_clicked = False
+                    for _cf2_wait in range(40):  # 最多 120 秒
                         time.sleep(3)
                         _cf2_title = page.title()
                         _cf2_url = page.url
@@ -1445,6 +1446,46 @@ class BrowserPayment:
                                 logger.info(f"[Checkout] Cloudflare 二次验证已通过 ({(_cf2_wait+1)*3}s) title={_cf2_title[:30]}")
                                 _cf2_passed = True
                                 break
+
+                        # 尝试点击 Cloudflare Turnstile checkbox
+                        if not _turnstile_clicked or _cf2_wait % 5 == 0:
+                            try:
+                                for frame in page.frames:
+                                    frame_url = frame.url
+                                    if "challenges.cloudflare.com" not in frame_url:
+                                        continue
+                                    logger.info(f"[Checkout] 发现 Turnstile frame: {frame_url[:80]}...")
+                                    # 尝试点击 Turnstile checkbox
+                                    for sel in ['#challenge-stage input[type="checkbox"]', 'input[type="checkbox"]',
+                                                '.cb-i', '#challenge-stage', '[id*="turnstile"]', 'label']:
+                                        try:
+                                            el = frame.query_selector(sel)
+                                            if el:
+                                                el.click()
+                                                _turnstile_clicked = True
+                                                logger.info(f"[Checkout] Turnstile checkbox 已点击: {sel}")
+                                                break
+                                        except Exception:
+                                            continue
+                                    # 如果没找到选择器，尝试通过 iframe box 坐标点击
+                                    if not _turnstile_clicked:
+                                        for iframe_el in page.query_selector_all('iframe'):
+                                            try:
+                                                cf = iframe_el.content_frame()
+                                                if cf and "challenges.cloudflare.com" in cf.url:
+                                                    box = iframe_el.bounding_box()
+                                                    if box and box["width"] > 20 and box["height"] > 20:
+                                                        page.mouse.click(box["x"] + 28, box["y"] + 22)
+                                                        _turnstile_clicked = True
+                                                        logger.info(f"[Checkout] Turnstile iframe 中心已点击 ({box['width']:.0f}x{box['height']:.0f})")
+                                                        break
+                                            except Exception:
+                                                continue
+                                    if _turnstile_clicked:
+                                        break
+                            except Exception as _te:
+                                logger.debug(f"[Checkout] Turnstile 检测异常: {_te}")
+
                         if _cf2_wait % 5 == 4:
                             logger.info(f"[Checkout] CF 二次等待中... ({(_cf2_wait+1)*3}s) title={_cf2_title[:30]}")
                     if not _cf2_passed:
