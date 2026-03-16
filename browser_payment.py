@@ -1423,16 +1423,46 @@ class BrowserPayment:
                 time.sleep(1)
 
                 # Step 2: 导航到 checkout 页面
+                # 使用 networkidle 等待，让 CF JS Challenge 有机会自动完成重定向
                 logger.info(f"[Checkout] 加载 checkout 页面...")
-                page.goto(checkout_url, wait_until="domcontentloaded", timeout=60000)
+                try:
+                    page.goto(checkout_url, wait_until="networkidle", timeout=60000)
+                except Exception as _nav_e:
+                    logger.warning(f"[Checkout] 导航 networkidle 超时，尝试 domcontentloaded: {_nav_e}")
+                    try:
+                        page.goto(checkout_url, wait_until="domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
                 time.sleep(2)
                 _post_nav_url = page.url
+                _post_nav_title = page.title()
                 logger.info(f"[Checkout] checkout 页面加载后 URL: {_post_nav_url}")
+                logger.info(f"[Checkout] checkout 页面加载后 title: {_post_nav_title}")
 
                 # Step 2.5: 检测 checkout 页面的 Cloudflare 挑战
                 _cf_checkout_title = page.title()
                 if "请稍候" in _cf_checkout_title or "Just a moment" in _cf_checkout_title or "__cf_chl_rt_tk" in _post_nav_url:
                     logger.info("[Checkout] checkout 页面触发 Cloudflare 验证，等待通过...")
+                    # 诊断: dump 完整页面 HTML (关键! 用于分析 CF 挑战类型)
+                    try:
+                        _cf_html = page.evaluate("document.documentElement.outerHTML")
+                        # 保存到文件
+                        _cf_html_path = os.path.join("test_outputs", "checkout_cf_page.html")
+                        os.makedirs("test_outputs", exist_ok=True)
+                        with open(_cf_html_path, "w", encoding="utf-8") as _hf:
+                            _hf.write(_cf_html)
+                        logger.info(f"[Checkout] CF 页面 HTML 已保存: {_cf_html_path} ({len(_cf_html)} bytes)")
+                        # 输出关键片段到日志
+                        logger.info(f"[Checkout] CF HTML 摘要: {_cf_html[:1000]}")
+                        # 检查是否有 challenge-form (CF JS Challenge 的标志)
+                        if "challenge-form" in _cf_html:
+                            logger.info("[Checkout] 检测到 CF challenge-form (JS Challenge)")
+                        if "turnstile" in _cf_html.lower():
+                            logger.info("[Checkout] 检测到 turnstile 关键词")
+                        if "<noscript>" in _cf_html:
+                            logger.info("[Checkout] 检测到 <noscript> 标签 (JS 可能未执行)")
+                    except Exception as _html_e:
+                        logger.warning(f"[Checkout] HTML dump 异常: {_html_e}")
                     # 诊断截图
                     try:
                         page.screenshot(path="test_outputs/checkout_cf_challenge_start.png")
@@ -1442,6 +1472,7 @@ class BrowserPayment:
                     _cf2_passed = False
                     _turnstile_clicked = False
                     _reload_done = False
+                    _form_submitted = False
                     for _cf2_wait in range(40):  # 最多 120 秒
                         time.sleep(3)
                         _cf2_title = page.title()
