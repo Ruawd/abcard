@@ -1433,8 +1433,15 @@ class BrowserPayment:
                 _cf_checkout_title = page.title()
                 if "请稍候" in _cf_checkout_title or "Just a moment" in _cf_checkout_title or "__cf_chl_rt_tk" in _post_nav_url:
                     logger.info("[Checkout] checkout 页面触发 Cloudflare 验证，等待通过...")
+                    # 诊断截图
+                    try:
+                        page.screenshot(path="test_outputs/checkout_cf_challenge_start.png")
+                        logger.info("[Checkout] CF 二次验证开始截图已保存")
+                    except Exception:
+                        pass
                     _cf2_passed = False
                     _turnstile_clicked = False
+                    _reload_done = False
                     for _cf2_wait in range(40):  # 最多 120 秒
                         time.sleep(3)
                         _cf2_title = page.title()
@@ -1447,27 +1454,118 @@ class BrowserPayment:
                                 _cf2_passed = True
                                 break
 
-                        # 尝试点击 Cloudflare Turnstile checkbox (跨域 iframe 无法访问 DOM，使用坐标点击)
+                        # 诊断: 每 9 秒输出所有 iframe 信息
+                        if _cf2_wait % 3 == 0:
+                            try:
+                                _iframe_info = page.evaluate("""
+                                    (() => {
+                                        const iframes = document.querySelectorAll('iframe');
+                                        const result = [];
+                                        iframes.forEach((f, i) => {
+                                            const box = f.getBoundingClientRect();
+                                            result.push({
+                                                idx: i,
+                                                src: (f.src || '').substring(0, 120),
+                                                name: f.name || '',
+                                                id: f.id || '',
+                                                w: Math.round(box.width),
+                                                h: Math.round(box.height),
+                                                x: Math.round(box.x),
+                                                y: Math.round(box.y),
+                                                visible: box.width > 0 && box.height > 0,
+                                            });
+                                        });
+                                        return result;
+                                    })()
+                                """)
+                                logger.info(f"[Checkout] CF 页面 iframes ({len(_iframe_info)}个): {json.dumps(_iframe_info, ensure_ascii=False)[:500]}")
+                            except Exception as _diag_e:
+                                logger.debug(f"[Checkout] iframe 诊断异常: {_diag_e}")
+
+                        # 30 秒后如果仍未通过且未 reload 过，尝试 reload 一次
+                        if _cf2_wait == 10 and not _cf2_passed and not _reload_done:
+                            logger.info("[Checkout] CF 二次验证 30s 未通过，尝试 reload...")
+                            try:
+                                page.reload(wait_until="domcontentloaded", timeout=30000)
+                                _reload_done = True
+                                _turnstile_clicked = False  # reload 后重置点击状态
+                                time.sleep(3)
+                                # reload 后截图
+                                page.screenshot(path="test_outputs/checkout_cf_after_reload.png")
+                                logger.info("[Checkout] reload 后截图已保存")
+                                continue
+                            except Exception as _rl_e:
+                                logger.warning(f"[Checkout] reload 异常: {_rl_e}")
+
+                        # 尝试点击 Cloudflare Turnstile checkbox
+                        # 每 15 秒重试一次点击 (不只是首次)
                         if not _turnstile_clicked or _cf2_wait % 5 == 0:
                             try:
-                                # 通过 src 属性直接查找 Turnstile iframe 元素
+                                # 多种选择器查找 Turnstile iframe
                                 _cf_iframes = page.query_selector_all('iframe[src*="challenges.cloudflare.com"]')
                                 if not _cf_iframes:
-                                    # 回退：检查所有 iframe 的 src
+                                    _cf_iframes = page.query_selector_all('iframe[src*="turnstile"]')
+                                if not _cf_iframes:
+                                    _cf_iframes = page.query_selector_all('iframe[src*="cdn-cgi"]')
+                                if not _cf_iframes:
+                                    # 最终回退: 遍历所有 iframe
                                     for _iel in page.query_selector_all('iframe'):
                                         _src = _iel.get_attribute('src') or ''
-                                        if 'challenges.cloudflare.com' in _src or 'turnstile' in _src:
+                                        _name = _iel.get_attribute('name') or ''
+                                        if any(kw in _src.lower() for kw in ['challenge', 'cloudflare', 'turnstile', 'cf-chl']):
                                             _cf_iframes = [_iel]
+                                            logger.info(f"[Checkout] 通过回退匹配找到 iframe: src={_src[:80]}")
                                             break
+                                        if any(kw in _name.lower() for kw in ['cf-', 'turnstile']):
+                                            _cf_iframes = [_iel]
+                                            logger.info(f"[Checkout] 通过 name 匹配找到 iframe: name={_name}")
+                                            break
+
+                                if not _cf_iframes and not _turnstile_clicked:
+                                    # 尝试通过 JS 查找 shadow DOM 中的 Turnstile
+                                    _shadow_info = page.evaluate("""
+                                        (() => {
+                                            // 查找 cf-turnstile 或 data-sitekey 的元素
+                                            const turnstile = document.querySelector('[data-sitekey]') ||
+                                                              document.querySelector('.cf-turnstile') ||
+                                                              document.querySelector('#cf-turnstile');
+                                            if (turnstile) {
+                                                const box = turnstile.getBoundingClientRect();
+                                                return {
+                                                    found: true,
+                                                    tag: turnstile.tagName,
+                                                    id: turnstile.id || '',
+                                                    cls: turnstile.className || '',
+                                                    w: Math.round(box.width),
+                                                    h: Math.round(box.height),
+                                                    x: Math.round(box.x),
+                                                    y: Math.round(box.y),
+                                                };
+                                            }
+                                            return { found: false };
+                                        })()
+                                    """)
+                                    if _shadow_info.get("found"):
+                                        logger.info(f"[Checkout] 发现 Turnstile 容器 (非iframe): {_shadow_info}")
+                                        # 点击容器中心位置
+                                        _sx = _shadow_info["x"] + _shadow_info["w"] / 2
+                                        _sy = _shadow_info["y"] + _shadow_info["h"] / 2
+                                        page.mouse.click(_sx, _sy)
+                                        _turnstile_clicked = True
+                                        logger.info(f"[Checkout] Turnstile 容器已点击 ({_sx:.0f}, {_sy:.0f})")
+                                        time.sleep(2)
+
                                 for _cf_iframe in _cf_iframes:
                                     box = _cf_iframe.bounding_box()
-                                    if not box or box["width"] < 10 or box["height"] < 10:
+                                    if not box or box["width"] < 5 or box["height"] < 5:
                                         continue
-                                    if not _turnstile_clicked:
-                                        logger.info(f"[Checkout] 发现 Turnstile iframe: {box['width']:.0f}x{box['height']:.0f} at ({box['x']:.0f},{box['y']:.0f})")
-                                    # Turnstile checkbox 在 iframe 左侧 (约 x+28, y 居中)
+                                    logger.info(f"[Checkout] 发现 Turnstile iframe: {box['width']:.0f}x{box['height']:.0f} at ({box['x']:.0f},{box['y']:.0f})")
+                                    # Turnstile checkbox 通常在 iframe 左侧 (约 x+28, y 居中)
                                     click_x = box["x"] + 28
                                     click_y = box["y"] + box["height"] / 2
+                                    # 先移动鼠标过去（模拟真人行为），再点击
+                                    page.mouse.move(click_x, click_y, steps=random.randint(5, 10))
+                                    time.sleep(random.uniform(0.2, 0.5))
                                     page.mouse.click(click_x, click_y)
                                     _turnstile_clicked = True
                                     logger.info(f"[Checkout] Turnstile 已点击坐标 ({click_x:.0f}, {click_y:.0f})")
@@ -1481,6 +1579,12 @@ class BrowserPayment:
                     if not _cf2_passed:
                         _cf2_body = page.evaluate("document.body ? document.body.innerText.substring(0, 300) : ''")
                         logger.warning(f"[Checkout] Cloudflare 二次验证超时! body={_cf2_body[:200]}")
+                        # 超时截图
+                        try:
+                            page.screenshot(path="test_outputs/checkout_cf_timeout.png")
+                            logger.info("[Checkout] CF 超时截图已保存: test_outputs/checkout_cf_timeout.png")
+                        except Exception:
+                            pass
                     # 更新 URL
                     _post_nav_url = page.url
                     time.sleep(2)
